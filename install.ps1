@@ -3,8 +3,13 @@
     Installs Ollama, pulls Ollama models and installs Docker Desktop on Windows, macOS or Linux.
 
 .DESCRIPTION
-    Runs unattended end-to-end. Each step is idempotent: tools that are already installed are
-    detected and skipped. Use -WhatIf for a dry run that only prints what would be done.
+    Each step is idempotent: tools that are already installed are detected and skipped. Use
+    -WhatIf for a dry run that only prints what would be done.
+
+    Unless -Models is given, the script lists the models from models.json, tags the ones that
+    fit this machine's memory (NVIDIA VRAM, Apple unified memory or system RAM) as recommended,
+    and asks which ones to pull. Without an interactive console it pulls the largest
+    recommended model, so the rest of the run stays unattended.
 
     Windows : winget (falls back to the official installers). Re-launches itself elevated.
     macOS   : official Ollama zip and Docker Desktop DMG (prompts once for sudo for Docker).
@@ -12,7 +17,11 @@
               KVM and a graphical session required), otherwise Docker Engine via get.docker.com.
 
 .PARAMETER Models
-    Ollama models to pull. Accepts an array or a comma-separated string. Default: qwen3:0.6b
+    Ollama models to pull. Accepts an array or a comma-separated string. When omitted, the
+    script asks which models from models.json to pull.
+
+.PARAMETER ModelsFile
+    Path to the model list JSON. Default: models.json next to this script.
 
 .PARAMETER SkipOllama
     Do not install Ollama.
@@ -37,7 +46,8 @@
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [string[]]$Models = @('qwen3:0.6b'),
+    [string[]]$Models,
+    [string]$ModelsFile,
     [switch]$SkipOllama,
     [switch]$SkipModels,
     [switch]$SkipDocker,
@@ -158,6 +168,425 @@ function Install-WithWinget([string]$Id) {
     } catch {
         Write-Warn "winget install of $Id failed: $($_.Exception.Message)"
         return $false
+    }
+}
+
+# --------------------------------------------------------------------------------------------
+# Model selection
+# --------------------------------------------------------------------------------------------
+function Get-SystemMemoryGB {
+    try {
+        if ($script:OnWindows) {
+            $bytes = [double](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+        } elseif ($script:OnMac) {
+            $bytes = [double]("$(& sysctl -n hw.memsize)".Trim())
+        } else {
+            $line = Get-Content '/proc/meminfo' | Where-Object { $_ -match '^MemTotal:\s+\d+' } | Select-Object -First 1
+            if (-not ($line -match '^MemTotal:\s+(\d+)')) { return $null }
+            $bytes = [double]$Matches[1] * 1KB
+        }
+        if ($bytes -le 0) { return $null }
+        return [math]::Round($bytes / 1GB, 1)
+    } catch { return $null }
+}
+
+function Get-GpuMemoryGB {
+    # NVIDIA only. Win32_VideoController.AdapterRAM is a 32-bit value capped at 4 GB, so it is not used.
+    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if (-not $smi) { return $null }
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $smi.Source --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $mib = @($out | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [double]$_ })
+        if ($mib.Count -eq 0) { return $null }
+        return [math]::Round(($mib | Measure-Object -Maximum).Maximum / 1024, 1)
+    } catch { return $null }
+    finally { $ErrorActionPreference = $oldEap }
+}
+
+function Get-ModelBudget {
+    # Memory (GB) a model can use and still run fast on this machine.
+    $ram  = Get-SystemMemoryGB
+    $vram = Get-GpuMemoryGB
+    if ($vram) {
+        return @{ Budget = $vram; Ram = $ram; Source = "NVIDIA GPU with $vram GB VRAM" }
+    }
+    if (-not $ram) { return $null }
+    if ($script:OnMac -and (Get-Arch) -eq 'arm64') {
+        # Metal can use about 2/3 of unified memory by default.
+        return @{ Budget = [math]::Round($ram * 0.65, 1); Ram = $ram; Source = "Apple silicon with $ram GB unified memory" }
+    }
+    # CPU inference: leave half the RAM for the OS, Docker and other apps.
+    return @{ Budget = [math]::Round($ram * 0.5, 1); Ram = $ram; Source = "CPU with $ram GB RAM" }
+}
+
+function Get-ModelCatalog([string]$Path) {
+    $fallback = @([pscustomobject]@{ name = 'qwen3:0.6b'; description = 'Qwen3 0.6B (built-in default)'; size_gb = 0.5; min_memory_gb = 2 })
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        Write-Warn "Model list not found$(if ($Path) { " at $Path" }); using the built-in default."
+        return $fallback
+    }
+    try {
+        $models = @((Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json).models | Where-Object { $_ -and $_.name })
+        if ($models.Count -eq 0) { throw 'it has no entries with a "name" field' }
+        return $models
+    } catch {
+        Write-Warn "Could not read ${Path}: $($_.Exception.Message). Using the built-in default."
+        return $fallback
+    }
+}
+
+function Get-ModelMinMemory($Model) {
+    if ($Model.min_memory_gb) { return [double]$Model.min_memory_gb }
+    if ($Model.size_gb)       { return [math]::Ceiling([double]$Model.size_gb * 1.2 + 1) }
+    return $null
+}
+
+function Get-ModelTier($Model, $Budget) {
+    $need = Get-ModelMinMemory $Model
+    if (-not $Budget -or $null -eq $need) { return '' }
+    if ($need -le $Budget.Budget) { return 'recommended' }
+    $ram = if ($Budget.Ram) { $Budget.Ram } else { $Budget.Budget }
+    if ($need -le $ram) { return 'may be slow' }   # fits in RAM but runs (partly) on the CPU
+    return 'too large'
+}
+
+function Test-Interactive {
+    if (-not [Environment]::UserInteractive) { return $false }
+    try { if ([Console]::IsInputRedirected) { return $false } } catch { }
+    if (@([Environment]::GetCommandLineArgs() | Where-Object { $_ -match '^-noni' }).Count -gt 0) { return $false }
+    return $true
+}
+
+function ConvertTo-Selection([string]$Text, [int]$Count) {
+    # Parses "1,3 5-7" into 0-based indexes. Returns $null if any token is invalid.
+    $idx = New-Object System.Collections.Generic.List[int]
+    foreach ($tok in ($Text -split '[,\s]+' | Where-Object { $_ })) {
+        if ($tok -match '^(\d+)-(\d+)$') { $a = [int]$Matches[1]; $b = [int]$Matches[2] }
+        elseif ($tok -match '^\d+$')     { $a = [int]$tok; $b = $a }
+        else { return $null }
+        if ($a -lt 1 -or $b -gt $Count -or $a -gt $b) { return $null }
+        for ($i = $a; $i -le $b; $i++) { if (-not $idx.Contains($i - 1)) { $idx.Add($i - 1) } }
+    }
+    if ($idx.Count -eq 0) { return $null }
+    return , $idx.ToArray()
+}
+
+function ConvertTo-ModelKey([string]$Name) {
+    # Normalizes a model reference so "phi4-mini", "phi4-mini:latest" and
+    # "registry.ollama.ai/library/phi4-mini:latest" all compare equal.
+    $n = $Name.Trim().ToLowerInvariant()
+    if ($n -notmatch ':[^/]+$')                { $n += ':latest' }
+    if ($n.StartsWith('registry.ollama.ai/')) { $n = $n.Substring('registry.ollama.ai/'.Length) }
+    if ($n.StartsWith('library/'))            { $n = $n.Substring('library/'.Length) }
+    return $n
+}
+
+function Get-InstalledModels {
+    # Returns @{ <model key> = @{ Name; Size } } for models already downloaded, where Name keeps
+    # the original spelling and Size is in GB. Asks the running
+    # Ollama server first; otherwise reads the manifests on disk, so it works before Ollama starts.
+    $installed = @{}
+    if (Test-OllamaServer) {
+        try {
+            $tags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 5 -UseBasicParsing
+            foreach ($m in @($tags.models)) {
+                if ($m.name) {
+                    $installed[(ConvertTo-ModelKey $m.name)] = @{ Name = "$($m.name)"; Size = [math]::Round([double]$m.size / 1GB, 1) }
+                }
+            }
+            return $installed
+        } catch { }
+    }
+
+    $userHome = if ($script:OnWindows) { $env:USERPROFILE } else { $env:HOME }
+    $roots = @()
+    if ($env:OLLAMA_MODELS) { $roots += $env:OLLAMA_MODELS }
+    if ($userHome)          { $roots += (Join-Path $userHome '.ollama/models') }
+    if ($script:OnLinux)    { $roots += '/usr/share/ollama/.ollama/models' }   # systemd service install
+
+    foreach ($root in $roots) {
+        $manifests = Join-Path $root 'manifests'
+        if (-not (Test-Path -LiteralPath $manifests)) { continue }
+        # Layout: manifests/<registry>/<namespace>/<model>/<tag>
+        foreach ($f in @(Get-ChildItem -LiteralPath $manifests -Recurse -File -ErrorAction SilentlyContinue)) {
+            $parts = @(($f.FullName.Substring($manifests.Length) -replace '\\', '/').Trim('/') -split '/')
+            if ($parts.Count -lt 3) { continue }
+            $ref = "{0}:{1}" -f ($parts[0..($parts.Count - 2)] -join '/'), $parts[-1]
+            $key = ConvertTo-ModelKey $ref
+            if ($installed.ContainsKey($key)) { continue }
+            $ref = $ref -replace '^registry\.ollama\.ai/', '' -replace '^library/', ''
+            $size = $null
+            try {
+                $manifest = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json
+                $bytes = (@($manifest.layers) + @($manifest.config) | Where-Object { $_ } |
+                          ForEach-Object { [double]$_.size } | Measure-Object -Sum).Sum
+                if ($bytes) { $size = [math]::Round($bytes / 1GB, 1) }
+            } catch { }
+            $installed[$key] = @{ Name = $ref; Size = $size }
+        }
+    }
+    return $installed
+}
+
+function Get-CheckMark {
+    # The classic Windows console fonts (Consolas, Lucida Console) have no U+2713, so use a
+    # square-root sign there. Windows Terminal and VS Code have fonts with a real check mark.
+    if ($script:OnWindows -and -not $env:WT_SESSION -and -not $env:TERM_PROGRAM) { return [string][char]0x221A }
+    return [string][char]0x2713
+}
+
+function Get-TierColor([string]$Tier) {
+    switch ($Tier) {
+        'recommended' { return 'Green' }
+        'may be slow' { return 'Yellow' }
+        'too large'   { return 'DarkGray' }
+        default       { return $null }
+    }
+}
+
+function Format-ModelSize($Size) {
+    if ($Size) { return '{0:0.0} GB' -f [double]$Size }
+    return '?'
+}
+
+function Get-NameWidth($Rows) {
+    return [math]::Max(5, ($Rows | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum)
+}
+
+function Write-ModelTable($Rows, $Default) {
+    $nameWidth = Get-NameWidth $Rows
+    Write-Host ''
+    Write-Host ("    {0,3}  {1}  {2,7}  {3,-14}{4,-11}{5}" -f '#', 'Model'.PadRight($nameWidth), 'Size', 'Fit', 'Status', 'Description')
+    foreach ($r in $Rows) {
+        $marker = if ($r.Index -eq $Default.Index) { '*' } else { ' ' }
+        $tag    = if ($r.Tier) { "[$($r.Tier)]" } else { '' }
+        Write-Host ("    {0,3}{1} {2}  {3,7}  " -f $r.Index, $marker, $r.Name.PadRight($nameWidth), (Format-ModelSize $r.Size)) -NoNewline
+        $color = Get-TierColor $r.Tier
+        if ($color) { Write-Host ('{0,-14}' -f $tag) -ForegroundColor $color -NoNewline }
+        else        { Write-Host ('{0,-14}' -f $tag) -NoNewline }
+        if ($r.Installed) { Write-Host ('{0,-11}' -f 'installed') -ForegroundColor DarkCyan -NoNewline }
+        else              { Write-Host (' ' * 11) -NoNewline }
+        Write-Host $r.Description
+    }
+    Write-Host "    * = default"
+    Write-Host ''
+}
+
+function Test-MenuSupported {
+    if ($Host.Name -eq 'Windows PowerShell ISE Host') { return $false }
+    try { return ([Console]::WindowWidth -ge 40 -and [Console]::WindowHeight -ge 10) }
+    catch { return $false }
+}
+
+function Write-MenuLine([object[]]$Segments, [int]$Width) {
+    # Writes one console line from (text, color) pairs, cut/padded to exactly $Width columns so
+    # it fully overwrites whatever was drawn there before. A $null color means the default.
+    $left = $Width
+    for ($i = 0; $i -lt $Segments.Count -and $left -gt 0; $i += 2) {
+        $text = [string]$Segments[$i]
+        if ($text.Length -gt $left) { $text = $text.Substring(0, $left) }
+        if ($Segments[$i + 1]) { Write-Host $text -ForegroundColor $Segments[$i + 1] -NoNewline }
+        else                   { Write-Host $text -NoNewline }
+        $left -= $text.Length
+    }
+    if ($left -gt 0) { Write-Host (' ' * $left) -NoNewline }
+    Write-Host ''
+}
+
+function Show-ModelMenu($Rows, $Default) {
+    # Arrow-key checkbox list. Returns the names of the checked models (empty = skip).
+    $count     = $Rows.Count
+    $checked   = New-Object bool[] $count
+    $checked[$Default.Index - 1] = $true
+    $cursor    = $Default.Index - 1
+    $offset    = 0
+    $nameWidth = Get-NameWidth $Rows
+    $width     = [Console]::WindowWidth - 1
+    $view      = [math]::Min($count, [Console]::WindowHeight - 6)   # model rows visible at once
+    $lines     = $view + 3                                          # help + header + rows + status
+    $status    = $null
+    $tick      = Get-CheckMark
+
+    # Redraw in place. With VT support, move the cursor up relative to where the last draw ended;
+    # this avoids [Console]::CursorTop, which on macOS/Linux queries the terminal and can swallow
+    # keystrokes if the reply is slow. Otherwise (old Windows consoles) use absolute positions.
+    $useVt = $false
+    try { $useVt = [bool]$Host.UI.SupportsVirtualTerminal } catch { }
+    $moveUp = "$([char]27)[${lines}A`r"
+    $top    = 0
+    $script:MenuDrawn = $false   # set by $draw, which runs in a child scope
+    Write-Host ''
+    if (-not $useVt) {
+        # Reserve the space first (this scrolls the screen if needed).
+        for ($i = 0; $i -lt $lines; $i++) { Write-Host '' }
+        $top = [math]::Max(0, [Console]::CursorTop - $lines)
+    }
+
+    $draw = {
+        if (-not $useVt)           { [Console]::SetCursorPosition(0, $top) }
+        elseif ($script:MenuDrawn) { Write-Host $moveUp -NoNewline }
+        $script:MenuDrawn = $true
+        Write-MenuLine @('  Up/Down: move   Space: select   A: all/none   Enter: confirm   Esc: skip models', 'DarkGray') $width
+        Write-MenuLine @(("       {0}  {1,7}  {2,-14}{3,-11}{4}" -f 'Model'.PadRight($nameWidth), 'Size', 'Fit', 'Status', 'Description'), $null) $width
+        for ($i = $offset; $i -lt $offset + $view; $i++) {
+            $r       = $Rows[$i]
+            $current = ($i -eq $cursor)
+            $pointer = if ($current) { '>' } else { ' ' }
+            $box     = if ($checked[$i]) { "[$tick]" } else { '[ ]' }
+            $main    = if ($current) { 'Cyan' } else { $null }
+            $tag     = if ($r.Tier) { "[$($r.Tier)]" } else { '' }
+            $state   = if ($r.Installed) { 'installed' } else { '' }
+            Write-MenuLine @(
+                " $pointer ", $main,
+                $box, $(if ($checked[$i]) { 'Green' } else { $main }),
+                (" {0}  {1,7}  " -f $r.Name.PadRight($nameWidth), (Format-ModelSize $r.Size)), $main,
+                ('{0,-14}' -f $tag), (Get-TierColor $r.Tier),
+                ('{0,-11}' -f $state), 'DarkCyan',
+                $r.Description, $main
+            ) $width
+        }
+        if ($status) {
+            Write-MenuLine @("  $status", 'Yellow') $width
+        } else {
+            $sel   = @(for ($i = 0; $i -lt $count; $i++) { if ($checked[$i]) { $Rows[$i] } })
+            $gb    = ($sel | Where-Object { -not $_.Installed } | ForEach-Object { [double]$_.Size } | Measure-Object -Sum).Sum
+            $more  = @()
+            if ($offset -gt 0)              { $more += 'more above' }
+            if ($offset + $view -lt $count) { $more += 'more below' }
+            $text  = "  {0} selected ({1:0.0} GB to download)" -f $sel.Count, $gb
+            if ($more) { $text += "   ($($more -join ', '))" }
+            Write-MenuLine @($text, 'DarkGray') $width
+        }
+    }
+
+    $cursorWasVisible = $null
+    try { $cursorWasVisible = [Console]::CursorVisible } catch { }
+    try { [Console]::CursorVisible = $false } catch { }
+    try {
+        while ($true) {
+            if ($cursor -lt $offset)          { $offset = $cursor }
+            if ($cursor -ge $offset + $view)  { $offset = $cursor - $view + 1 }
+            & $draw
+            $status = $null
+
+            $key = [Console]::ReadKey($true)
+            $name = "$($key.Key)"
+            if ($key.KeyChar -eq 'k') { $name = 'UpArrow' }
+            if ($key.KeyChar -eq 'j') { $name = 'DownArrow' }
+            switch ($name) {
+                'UpArrow'   { $cursor = ($cursor - 1 + $count) % $count }
+                'DownArrow' { $cursor = ($cursor + 1) % $count }
+                'Home'      { $cursor = 0 }
+                'End'       { $cursor = $count - 1 }
+                'PageUp'    { $cursor = [math]::Max(0, $cursor - $view) }
+                'PageDown'  { $cursor = [math]::Min($count - 1, $cursor + $view) }
+                'Spacebar'  { $checked[$cursor] = -not $checked[$cursor] }
+                'A' {
+                    $all = ($checked -notcontains $false)
+                    for ($i = 0; $i -lt $count; $i++) { $checked[$i] = -not $all }
+                }
+                'Escape' { return }
+                'Enter' {
+                    $chosen   = @(for ($i = 0; $i -lt $count; $i++) { if ($checked[$i]) { $Rows[$i] } })
+                    $tooLarge = @($chosen | Where-Object { $_.Tier -eq 'too large' })
+                    if ($tooLarge.Count -gt 0) {
+                        $status = "Too large for this machine: $(($tooLarge | ForEach-Object { $_.Name }) -join ', '). Pull anyway? [y/N]"
+                        & $draw
+                        $status = $null
+                        if ([Console]::ReadKey($true).KeyChar -notmatch '^[yY]$') { break }
+                    }
+                    return @($chosen | ForEach-Object { $_.Name })
+                }
+            }
+        }
+    } finally {
+        if (-not $useVt) { try { [Console]::SetCursorPosition(0, $top + $lines) } catch { } }
+        if ($null -ne $cursorWasVisible) { try { [Console]::CursorVisible = $cursorWasVisible } catch { } }
+        else { try { [Console]::CursorVisible = $true } catch { } }
+    }
+}
+
+function Select-Models {
+    $path = $ModelsFile
+    if (-not $path -and $PSScriptRoot) { $path = Join-Path $PSScriptRoot 'models.json' }
+
+    Write-Step 'Choose Ollama models'
+    $catalog = @(Get-ModelCatalog $path | Sort-Object { [double]$_.size_gb }, name)
+    $budget  = Get-ModelBudget
+    if ($budget) {
+        Write-Info "Detected: $($budget.Source). Recommending models that need up to $($budget.Budget) GB."
+    } else {
+        Write-Warn 'Could not detect system memory; no models are marked recommended.'
+    }
+
+    $installed = Get-InstalledModels
+    if ($installed.Count -gt 0) { Write-Info "Already downloaded: $($installed.Count) model(s)." }
+
+    # Downloaded models that aren't in the catalog are listed too, after the catalog entries.
+    $catalogKeys = @($catalog | ForEach-Object { ConvertTo-ModelKey $_.name })
+    $extras = @($installed.Keys | Where-Object { $catalogKeys -notcontains $_ } | ForEach-Object {
+        $name = $installed[$_].Name -replace ':latest$', ''
+        [pscustomobject]@{ name = $name; description = 'Downloaded earlier (not in models.json)'; size_gb = $installed[$_].Size }
+    } | Sort-Object { [double]$_.size_gb }, name)
+
+    $all  = @($catalog) + @($extras)
+    $rows = @(for ($i = 0; $i -lt $all.Count; $i++) {
+        $m = $all[$i]
+        [pscustomobject]@{
+            Index       = $i + 1
+            Name        = "$($m.name)"
+            Size        = $m.size_gb
+            Tier        = Get-ModelTier $m $budget
+            Installed   = $installed.ContainsKey((ConvertTo-ModelKey $m.name))
+            Description = "$($m.description)"
+        }
+    })
+
+    # Default: the largest recommended catalog model, else the smallest one.
+    $recommended = @($rows | Where-Object { $_.Index -le $catalog.Count -and $_.Tier -eq 'recommended' })
+    $default = if ($recommended.Count -gt 0) { $recommended[-1] } else { $rows[0] }
+
+    $interactive = Test-Interactive
+    if ($interactive -and (Test-MenuSupported)) {
+        try {
+            $picked = @(Show-ModelMenu $rows $default)
+            if ($picked.Count -gt 0) { Write-Ok "Selected: $($picked -join ', ')" } else { Write-Info 'No models selected.' }
+            return $picked
+        } catch {
+            Write-Warn "Arrow-key menu unavailable ($($_.Exception.Message)); using the numbered list."
+        }
+    }
+
+    Write-ModelTable $rows $default
+    if (-not $interactive) {
+        Write-Info "No interactive console; pulling the default: $($default.Name)"
+        return $default.Name
+    }
+
+    # Fallback for hosts without a usable console (e.g. the PowerShell ISE): type numbers.
+    while ($true) {
+        $answer = "$(Read-Host "    Select models (e.g. 1,3 or 2-4 / all / none) [Enter = $($default.Name)]")".Trim()
+        if (-not $answer)                     { $chosen = @($default) }
+        elseif ($answer -match '^(all|a)$')   { $chosen = $rows }
+        elseif ($answer -match '^(none|n)$')  { return }
+        else {
+            $sel = ConvertTo-Selection $answer $rows.Count
+            if ($null -eq $sel) {
+                Write-Warn "Enter numbers from 1 to $($rows.Count), ranges like 2-4, 'all' or 'none'."
+                continue
+            }
+            $chosen = @($sel | ForEach-Object { $rows[$_] })
+        }
+
+        $tooLarge = @($chosen | Where-Object { $_.Tier -eq 'too large' })
+        if ($tooLarge.Count -gt 0) {
+            Write-Warn "Too large for this machine: $(($tooLarge | ForEach-Object { $_.Name }) -join ', ')"
+            if ("$(Read-Host '    Pull them anyway? [y/N]')".Trim() -notmatch '^(y|yes)$') { continue }
+        }
+        return @($chosen | ForEach-Object { $_.Name })
     }
 }
 
@@ -489,6 +918,18 @@ if (-not ($script:OnWindows -or $script:OnMac -or $script:OnLinux)) {
 
 $osName = if ($script:OnWindows) { 'Windows' } elseif ($script:OnMac) { 'macOS' } else { 'Linux' }
 Write-Host "Docker + Ollama installer  |  OS: $osName  |  Arch: $(Get-Arch)  |  PowerShell $($PSVersionTable.PSVersion)"
+
+# Ask which models to pull. Runs before the Windows elevation so the prompt appears in the
+# user's own console; the answer is forwarded to the elevated process via $PSBoundParameters.
+if (-not $SkipModels -and -not $PSBoundParameters.ContainsKey('Models')) {
+    $Models = @(Select-Models)
+    if ($Models.Count -eq 0) {
+        $SkipModels = [switch]$true
+        $PSBoundParameters['SkipModels'] = [switch]$true
+    } else {
+        $PSBoundParameters['Models'] = $Models
+    }
+}
 
 # Windows: re-launch elevated (installers need admin). Skipped for -WhatIf dry runs.
 if ($script:OnWindows -and -not $WhatIfPreference) {
