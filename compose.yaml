@@ -1,0 +1,15 @@
+services:
+  installer:
+    build: .
+    image: installation-script:dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace                 # this project, live-mounted from the host
+      - ollama-data:/root/.ollama    # pulled models survive container removal
+    stdin_open: true                 # needed for the interactive model menu
+    tty: true
+    environment:
+      TERM: xterm-256color
+
+volumes:
+  ollama-data:
