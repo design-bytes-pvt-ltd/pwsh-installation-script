@@ -51,11 +51,14 @@ param(
     [switch]$SkipOllama,
     [switch]$SkipModels,
     [switch]$SkipDocker,
-    [switch]$DockerEngine
+    [switch]$DockerEngine,
+    [Parameter(DontShow)][string]$InvokingUser,
+    [Parameter(DontShow)][string]$InvokingProfile
 )
 
 $ErrorActionPreference = 'Stop'
 $script:Ctx = $PSCmdlet
+$script:ScriptBoundParameters = $PSBoundParameters
 
 # --------------------------------------------------------------------------------------------
 # Platform detection (Windows PowerShell 5.1 has no $IsWindows/$IsMacOS/$IsLinux)
@@ -142,6 +145,13 @@ function New-TempDir {
 function Invoke-Download([string]$Url, [string]$Destination) {
     if (-not (Confirm-Action $Url "Download to $Destination")) { return }
     Write-Info "Downloading $Url"
+    if ($script:OnWindows -and $PSVersionTable.PSEdition -eq 'Desktop') {
+        $proto = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        if ([Enum]::IsDefined([Net.SecurityProtocolType], 'Tls13')) {
+            $proto = $proto -bor [Net.SecurityProtocolType]::Tls13
+        }
+        [Net.ServicePointManager]::SecurityProtocol = $proto
+    }
     $oldProgress = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'   # progress bar makes IWR very slow on 5.1
     try {
@@ -149,6 +159,34 @@ function Invoke-Download([string]$Url, [string]$Destination) {
     } finally {
         $ProgressPreference = $oldProgress
     }
+}
+
+function Get-TargetUser {
+    if ($script:OnWindows) {
+        if ($InvokingUser) { return $InvokingUser }
+        return $env:USERNAME
+    }
+    if ($env:SUDO_USER) { return $env:SUDO_USER }
+    return $env:USER
+}
+
+function Get-TargetUserProfile {
+    if ($script:OnWindows) {
+        if ($InvokingProfile) { return $InvokingProfile }
+        return $env:USERPROFILE
+    }
+    return $env:HOME
+}
+
+function Get-OllamaBaseUrl {
+    $raw = "$env:OLLAMA_HOST".Trim()
+    if (-not $raw) { return 'http://127.0.0.1:11434' }
+    if ($raw -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') { $raw = "http://$raw" }
+    $uri = [Uri]$raw
+    $hostPart = if ($uri.Host -in @('0.0.0.0', '::', '[::]')) { '127.0.0.1' } else { $uri.Host }
+    $hasExplicitPort = $raw -match '^[a-zA-Z][a-zA-Z0-9+.-]*://(\[[^\]]+\]|[^/:]+):(\d+)'
+    $port = if ($hasExplicitPort) { $uri.Port } elseif ($uri.Scheme -eq 'http') { 11434 } else { $uri.Port }
+    return "$($uri.Scheme)://${hostPart}:${port}"
 }
 
 function Update-SessionPath {
@@ -291,7 +329,7 @@ function Get-InstalledModels {
     $installed = @{}
     if (Test-OllamaServer) {
         try {
-            $tags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 5 -UseBasicParsing
+            $tags = Invoke-RestMethod -Uri "$(Get-OllamaBaseUrl)/api/tags" -TimeoutSec 5 -UseBasicParsing
             foreach ($m in @($tags.models)) {
                 if ($m.name) {
                     $installed[(ConvertTo-ModelKey $m.name)] = @{ Name = "$($m.name)"; Size = [math]::Round([double]$m.size / 1GB, 1) }
@@ -301,7 +339,7 @@ function Get-InstalledModels {
         } catch { }
     }
 
-    $userHome = if ($script:OnWindows) { $env:USERPROFILE } else { $env:HOME }
+    $userHome = Get-TargetUserProfile
     $roots = @()
     if ($env:OLLAMA_MODELS) { $roots += $env:OLLAMA_MODELS }
     if ($userHome)          { $roots += (Join-Path $userHome '.ollama/models') }
@@ -597,7 +635,11 @@ function Get-OllamaExe {
     $cmd = Get-Command ollama -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     $candidates = @()
-    if ($script:OnWindows) { $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe') }
+    if ($script:OnWindows) {
+        $profileDir = Get-TargetUserProfile
+        if ($profileDir) { $candidates += (Join-Path $profileDir 'AppData\Local\Programs\Ollama\ollama.exe') }
+        if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe') }
+    }
     if ($script:OnMac)     { $candidates += '/Applications/Ollama.app/Contents/Resources/ollama' }
     if ($script:OnLinux)   { $candidates += @('/usr/local/bin/ollama', '/usr/bin/ollama') }
     foreach ($c in $candidates) { if ($c -and (Test-Path $c)) { return $c } }
@@ -655,7 +697,7 @@ function Install-Ollama {
 
 function Test-OllamaServer {
     try {
-        $null = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/version' -TimeoutSec 2 -UseBasicParsing
+        $null = Invoke-RestMethod -Uri "$(Get-OllamaBaseUrl)/api/version" -TimeoutSec 2 -UseBasicParsing
         return $true
     } catch { return $false }
 }
@@ -684,7 +726,7 @@ function Wait-OllamaServer([string]$OllamaExe) {
         Start-Sleep -Seconds 1
         if (Test-OllamaServer) { return }
     }
-    throw "Ollama server did not become reachable on http://127.0.0.1:11434 (see $log.err)."
+    throw "Ollama server did not become reachable on $(Get-OllamaBaseUrl) (see $log.err)."
 }
 
 function Invoke-ModelPull {
@@ -757,11 +799,12 @@ function Install-DockerWindows {
         } finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false }
     }
 
+    $targetUser = Get-TargetUser
     try {
         # Exit code 2 = user is already a member.
-        Invoke-Native -FilePath 'net' -ArgumentList @('localgroup', 'docker-users', $env:USERNAME, '/add') -AllowedExitCodes @(0, 2)
+        Invoke-Native -FilePath 'net' -ArgumentList @('localgroup', 'docker-users', $targetUser, '/add') -AllowedExitCodes @(0, 2)
     } catch {
-        Write-Warn "Could not add $env:USERNAME to docker-users: $($_.Exception.Message)"
+        Write-Warn "Could not add $targetUser to docker-users: $($_.Exception.Message)"
     }
     Update-SessionPath
     $script:Notes.Add('Sign out and back in (or reboot) so the docker-users group membership takes effect, then start Docker Desktop.')
@@ -780,7 +823,8 @@ function Install-DockerMac {
         }
         Invoke-Native -FilePath 'hdiutil' -ArgumentList @('attach', $dmg, '-nobrowse', '-quiet', '-mountpoint', $mount)
         $attached = -not $WhatIfPreference
-        Invoke-Sudo -FilePath (Join-Path $mount 'Docker.app/Contents/MacOS/install') -ArgumentList @('--accept-license', "--user=$env:USER")
+        $targetUser = Get-TargetUser
+        Invoke-Sudo -FilePath (Join-Path $mount 'Docker.app/Contents/MacOS/install') -ArgumentList @('--accept-license', "--user=$targetUser")
     } finally {
         if ($attached) { try { & hdiutil detach $mount -quiet | Out-Null } catch { Write-Warn "Could not detach $mount" } }
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false
@@ -912,73 +956,88 @@ function Install-Docker {
 # --------------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------------
-if (-not ($script:OnWindows -or $script:OnMac -or $script:OnLinux)) {
-    throw 'Unsupported operating system.'
-}
-
-$osName = if ($script:OnWindows) { 'Windows' } elseif ($script:OnMac) { 'macOS' } else { 'Linux' }
-Write-Host "Docker + Ollama installer  |  OS: $osName  |  Arch: $(Get-Arch)  |  PowerShell $($PSVersionTable.PSVersion)"
-
-# Ask which models to pull. Runs before the Windows elevation so the prompt appears in the
-# user's own console; the answer is forwarded to the elevated process via $PSBoundParameters.
-if (-not $SkipModels -and -not $PSBoundParameters.ContainsKey('Models')) {
-    $Models = @(Select-Models)
-    if ($Models.Count -eq 0) {
-        $SkipModels = [switch]$true
-        $PSBoundParameters['SkipModels'] = [switch]$true
-    } else {
-        $PSBoundParameters['Models'] = $Models
+function Invoke-Main {
+    if (-not ($script:OnWindows -or $script:OnMac -or $script:OnLinux)) {
+        throw 'Unsupported operating system.'
     }
-}
 
-# Windows: re-launch elevated (installers need admin). Skipped for -WhatIf dry runs.
-if ($script:OnWindows -and -not $WhatIfPreference) {
-    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Host 'Re-launching as Administrator...'
-        $hostExe = (Get-Process -Id $PID).Path
-        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-        foreach ($kv in $PSBoundParameters.GetEnumerator()) {
-            if ($kv.Value -is [System.Management.Automation.SwitchParameter]) {
-                if ($kv.Value.IsPresent) { $argList += "-$($kv.Key)" }
-            } else {
-                $argList += "-$($kv.Key)"
-                $argList += "`"$(@($kv.Value) -join ',')`""
-            }
+    $osName = if ($script:OnWindows) { 'Windows' } elseif ($script:OnMac) { 'macOS' } else { 'Linux' }
+    Write-Host "Docker + Ollama installer  |  OS: $osName  |  Arch: $(Get-Arch)  |  PowerShell $($PSVersionTable.PSVersion)"
+
+    # Ask which models to pull. Runs before the Windows elevation so the prompt appears in the
+    # user's own console; the answer is forwarded to the elevated process via $script:ScriptBoundParameters.
+    if (-not $script:SkipModels -and -not $script:ScriptBoundParameters.ContainsKey('Models')) {
+        $script:Models = @(Select-Models)
+        if ($script:Models.Count -eq 0) {
+            $script:SkipModels = [switch]$true
+            $script:ScriptBoundParameters['SkipModels'] = [switch]$true
+        } else {
+            $script:ScriptBoundParameters['Models'] = $script:Models
         }
-        $p = Start-Process -FilePath $hostExe -ArgumentList $argList -Verb RunAs -Wait -PassThru
-        exit $p.ExitCode
     }
-}
 
-$steps = @(
-    @{ Name = 'Ollama';  Skip = [bool]$SkipOllama; Action = { Install-Ollama } },
-    @{ Name = 'Models';  Skip = [bool]$SkipModels; Action = { Invoke-ModelPull } },
-    @{ Name = 'Docker';  Skip = [bool]$SkipDocker; Action = { Install-Docker } }
-)
-
-foreach ($step in $steps) {
-    if ($step.Skip) { $script:Results[$step.Name] = 'skipped'; continue }
-    try {
-        $out = & $step.Action
-        $script:Results[$step.Name] = "$(@($out)[-1])"
-    } catch {
-        Write-Warn "$($step.Name) failed: $($_.Exception.Message)"
-        $script:Results[$step.Name] = "FAILED: $($_.Exception.Message)"
+    # Windows: re-launch elevated (installers need admin). Skipped for -WhatIf dry runs.
+    if ($script:OnWindows -and -not $WhatIfPreference) {
+        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            if (-not $PSCommandPath) {
+                throw 'Self-elevation on Windows requires running install.ps1 from a file. Save the script locally or run from an elevated PowerShell.'
+            }
+            if (-not $script:ScriptBoundParameters.ContainsKey('InvokingUser') -and $env:USERNAME) {
+                $script:ScriptBoundParameters['InvokingUser'] = $env:USERNAME
+            }
+            if (-not $script:ScriptBoundParameters.ContainsKey('InvokingProfile') -and $env:USERPROFILE) {
+                $script:ScriptBoundParameters['InvokingProfile'] = $env:USERPROFILE
+            }
+            Write-Host 'Re-launching as Administrator...'
+            $hostExe = (Get-Process -Id $PID).Path
+            $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+            foreach ($kv in $script:ScriptBoundParameters.GetEnumerator()) {
+                if ($kv.Value -is [System.Management.Automation.SwitchParameter]) {
+                    if ($kv.Value.IsPresent) { $argList += "-$($kv.Key)" }
+                } else {
+                    $argList += "-$($kv.Key)"
+                    $argList += "`"$(@($kv.Value) -join ',')`""
+                }
+            }
+            $p = Start-Process -FilePath $hostExe -ArgumentList $argList -Verb RunAs -Wait -PassThru
+            exit $p.ExitCode
+        }
     }
+
+    $steps = @(
+        @{ Name = 'Ollama';  Skip = [bool]$script:SkipOllama; Action = { Install-Ollama } },
+        @{ Name = 'Models';  Skip = [bool]$script:SkipModels; Action = { Invoke-ModelPull } },
+        @{ Name = 'Docker';  Skip = [bool]$script:SkipDocker; Action = { Install-Docker } }
+    )
+
+    foreach ($step in $steps) {
+        if ($step.Skip) { $script:Results[$step.Name] = 'skipped'; continue }
+        try {
+            $out = & $step.Action
+            $script:Results[$step.Name] = "$(@($out)[-1])"
+        } catch {
+            Write-Warn "$($step.Name) failed: $($_.Exception.Message)"
+            $script:Results[$step.Name] = "FAILED: $($_.Exception.Message)"
+        }
+    }
+
+    Write-Step 'Summary'
+    foreach ($k in $script:Results.Keys) {
+        $v = $script:Results[$k]
+        $color = if ($v -like 'FAILED*') { 'Red' } elseif ($v -eq 'skipped') { 'DarkGray' } else { 'Green' }
+        Write-Host ("    {0,-8} {1}" -f $k, $v) -ForegroundColor $color
+    }
+    if ($script:Notes.Count -gt 0) {
+        Write-Host "`n    Next steps:" -ForegroundColor Yellow
+        foreach ($n in ($script:Notes | Select-Object -Unique)) { Write-Host "     - $n" -ForegroundColor Yellow }
+    }
+
+    $failedSteps = @($script:Results.Values | Where-Object { $_ -like 'FAILED*' })
+    if ($failedSteps.Count -gt 0) { exit 1 }
+    exit 0
 }
 
-Write-Step 'Summary'
-foreach ($k in $script:Results.Keys) {
-    $v = $script:Results[$k]
-    $color = if ($v -like 'FAILED*') { 'Red' } elseif ($v -eq 'skipped') { 'DarkGray' } else { 'Green' }
-    Write-Host ("    {0,-8} {1}" -f $k, $v) -ForegroundColor $color
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-Main
 }
-if ($script:Notes.Count -gt 0) {
-    Write-Host "`n    Next steps:" -ForegroundColor Yellow
-    foreach ($n in ($script:Notes | Select-Object -Unique)) { Write-Host "     - $n" -ForegroundColor Yellow }
-}
-
-$failedSteps = @($script:Results.Values | Where-Object { $_ -like 'FAILED*' })
-if ($failedSteps.Count -gt 0) { exit 1 }
-exit 0
