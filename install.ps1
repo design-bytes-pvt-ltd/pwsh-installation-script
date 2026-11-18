@@ -53,7 +53,8 @@ param(
     [switch]$SkipDocker,
     [switch]$DockerEngine,
     [Parameter(DontShow)][string]$InvokingUser,
-    [Parameter(DontShow)][string]$InvokingProfile
+    [Parameter(DontShow)][string]$InvokingProfile,
+    [Parameter(DontShow)][string]$ResultFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +81,11 @@ function Write-Step([string]$Message) { Write-Host "`n==> $Message" -ForegroundC
 function Write-Ok([string]$Message)   { Write-Host "    [ok] $Message" -ForegroundColor Green }
 function Write-Info([string]$Message) { Write-Host "    $Message" }
 function Write-Warn([string]$Message) { Write-Host "    [warn] $Message" -ForegroundColor Yellow }
+
+function Add-Note([string]$Text) {
+    # Follow-up steps for the summary. Dry runs change nothing, so they get no notes.
+    if (-not $WhatIfPreference) { $script:Notes.Add($Text) }
+}
 
 function Test-Command([string]$Name) {
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -161,10 +167,16 @@ function Invoke-Download([string]$Url, [string]$Destination) {
     }
 }
 
+function Get-WindowsAccountName {
+    # DOMAIN\user, so domain accounts can be added to local groups.
+    if ($env:USERDOMAIN -and $env:USERNAME) { return "$env:USERDOMAIN\$env:USERNAME" }
+    return $env:USERNAME
+}
+
 function Get-TargetUser {
     if ($script:OnWindows) {
         if ($InvokingUser) { return $InvokingUser }
-        return $env:USERNAME
+        return Get-WindowsAccountName
     }
     if ($env:SUDO_USER) { return $env:SUDO_USER }
     return $env:USER
@@ -224,40 +236,85 @@ function Get-SystemMemoryGB {
             $bytes = [double]$Matches[1] * 1KB
         }
         if ($bytes -le 0) { return $null }
-        return [math]::Round($bytes / 1GB, 1)
+        return ConvertTo-Round1 ($bytes / 1GB)
     } catch { return $null }
 }
 
-function Get-GpuMemoryGB {
-    # NVIDIA only. Win32_VideoController.AdapterRAM is a 32-bit value capped at 4 GB, so it is not used.
-    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if (-not $smi) { return $null }
+function ConvertTo-Round1([double]$Value) {
+    # Half away from zero, matching Math.round() in the Electron app (PowerShell defaults to banker's rounding).
+    return [math]::Round($Value, 1, [MidpointRounding]::AwayFromZero)
+}
+
+function ConvertFrom-NvidiaSmi($Lines) {
+    # nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits prints MiB per GPU.
+    $mib = @($Lines | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [double]$_ })
+    if ($mib.Count -eq 0) { return $null }
+    return ConvertTo-Round1 (($mib | Measure-Object -Maximum).Maximum / 1024)
+}
+
+function ConvertFrom-RocmSmiJson([string]$Json) {
+    # rocm-smi --showmeminfo vram --json: { "card0": { "VRAM Total Memory (B)": "17163091968", ... } }
+    try { $data = $Json | ConvertFrom-Json } catch { return $null }
+    if (-not $data) { return $null }
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $sizes = @(foreach ($card in $data.PSObject.Properties) {
+        if ($card.Value -isnot [System.Management.Automation.PSCustomObject]) { continue }
+        foreach ($p in $card.Value.PSObject.Properties) {
+            $bytes = 0.0
+            if ($p.Name -match 'vram.*total' -and
+                [double]::TryParse("$($p.Value)", [Globalization.NumberStyles]::Float, $inv, [ref]$bytes) -and $bytes -gt 0) {
+                $bytes / 1GB
+            }
+        }
+    })
+    if ($sizes.Count -eq 0) { return $null }
+    return ConvertTo-Round1 ($sizes | Measure-Object -Maximum).Maximum
+}
+
+function Get-GpuInfo {
+    # NVIDIA (nvidia-smi), then AMD (rocm-smi). Returns @{ Vendor; VramGB } or $null.
+    # Win32_VideoController.AdapterRAM is a 32-bit value capped at 4 GB, so it is not used.
     $oldEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $out = & $smi.Source --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
-        if ($LASTEXITCODE -ne 0) { return $null }
-        $mib = @($out | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [double]$_ })
-        if ($mib.Count -eq 0) { return $null }
-        return [math]::Round(($mib | Measure-Object -Maximum).Maximum / 1024, 1)
+        $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($smi) {
+            $out = & $smi.Source --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $vram = ConvertFrom-NvidiaSmi $out
+                if ($vram) { return @{ Vendor = 'NVIDIA'; VramGB = $vram } }
+            }
+        }
+        $rocm = Get-Command rocm-smi -ErrorAction SilentlyContinue
+        if ($rocm) {
+            $out = & $rocm.Source --showmeminfo vram --json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $vram = ConvertFrom-RocmSmiJson (@($out) -join "`n")
+                if ($vram) { return @{ Vendor = 'AMD'; VramGB = $vram } }
+            }
+        }
+        return $null
     } catch { return $null }
     finally { $ErrorActionPreference = $oldEap }
 }
 
-function Get-ModelBudget {
-    # Memory (GB) a model can use and still run fast on this machine.
-    $ram  = Get-SystemMemoryGB
-    $vram = Get-GpuMemoryGB
-    if ($vram) {
-        return @{ Budget = $vram; Ram = $ram; Source = "NVIDIA GPU with $vram GB VRAM" }
+function ConvertTo-ModelBudget($RamGB, $Gpu, [bool]$AppleSilicon) {
+    # Memory (GB) a model can use and still run fast. Same rules as computeModelBudget() in the app.
+    if ($Gpu) {
+        return @{ Budget = $Gpu.VramGB; Ram = $RamGB; Source = "$($Gpu.Vendor) GPU with $($Gpu.VramGB) GB VRAM" }
     }
-    if (-not $ram) { return $null }
-    if ($script:OnMac -and (Get-Arch) -eq 'arm64') {
+    if (-not $RamGB) { return $null }
+    if ($AppleSilicon) {
         # Metal can use about 2/3 of unified memory by default.
-        return @{ Budget = [math]::Round($ram * 0.65, 1); Ram = $ram; Source = "Apple silicon with $ram GB unified memory" }
+        return @{ Budget = (ConvertTo-Round1 ($RamGB * 0.65)); Ram = $RamGB; Source = "Apple silicon with $RamGB GB unified memory" }
     }
     # CPU inference: leave half the RAM for the OS, Docker and other apps.
-    return @{ Budget = [math]::Round($ram * 0.5, 1); Ram = $ram; Source = "CPU with $ram GB RAM" }
+    return @{ Budget = (ConvertTo-Round1 ($RamGB * 0.5)); Ram = $RamGB; Source = "CPU with $RamGB GB RAM" }
+}
+
+function Get-ModelBudget {
+    $appleSilicon = $script:OnMac -and (Get-Arch) -eq 'arm64'
+    return ConvertTo-ModelBudget (Get-SystemMemoryGB) (Get-GpuInfo) $appleSilicon
 }
 
 function Get-ModelCatalog([string]$Path) {
@@ -332,7 +389,7 @@ function Get-InstalledModels {
             $tags = Invoke-RestMethod -Uri "$(Get-OllamaBaseUrl)/api/tags" -TimeoutSec 5 -UseBasicParsing
             foreach ($m in @($tags.models)) {
                 if ($m.name) {
-                    $installed[(ConvertTo-ModelKey $m.name)] = @{ Name = "$($m.name)"; Size = [math]::Round([double]$m.size / 1GB, 1) }
+                    $installed[(ConvertTo-ModelKey $m.name)] = @{ Name = "$($m.name)"; Size = (ConvertTo-Round1 ([double]$m.size / 1GB)) }
                 }
             }
             return $installed
@@ -361,7 +418,7 @@ function Get-InstalledModels {
                 $manifest = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json
                 $bytes = (@($manifest.layers) + @($manifest.config) | Where-Object { $_ } |
                           ForEach-Object { [double]$_.size } | Measure-Object -Sum).Sum
-                if ($bytes) { $size = [math]::Round($bytes / 1GB, 1) }
+                if ($bytes) { $size = ConvertTo-Round1 ($bytes / 1GB) }
             } catch { }
             $installed[$key] = @{ Name = $ref; Size = $size }
         }
@@ -547,12 +604,42 @@ function Show-ModelMenu($Rows, $Default) {
     }
 }
 
+function Get-ModelRows($Catalog, [hashtable]$Installed, $Budget) {
+    # Builds the model table: catalog entries sorted by size, then downloaded models that aren't
+    # in the catalog. Default: the largest recommended catalog model, else the first row.
+    # Same rules as buildModelRows() in the app (tests/fixtures/model-rows.parity.json keeps them in sync).
+    if (-not $Installed) { $Installed = @{} }
+    $catalog = @($Catalog | Sort-Object { [double]$_.size_gb }, name)
+    $catalogKeys = @($catalog | ForEach-Object { ConvertTo-ModelKey $_.name })
+    $extras = @($Installed.Keys | Where-Object { $catalogKeys -notcontains $_ } | ForEach-Object {
+        $name = $Installed[$_].Name -replace ':latest$', ''
+        [pscustomobject]@{ name = $name; description = 'Downloaded earlier (not in models.json)'; size_gb = $Installed[$_].Size }
+    } | Sort-Object { [double]$_.size_gb }, name)
+
+    $all  = @($catalog) + @($extras)
+    $rows = @(for ($i = 0; $i -lt $all.Count; $i++) {
+        $m = $all[$i]
+        [pscustomobject]@{
+            Index       = $i + 1
+            Name        = "$($m.name)"
+            Size        = $m.size_gb
+            Tier        = Get-ModelTier $m $Budget
+            Installed   = $Installed.ContainsKey((ConvertTo-ModelKey $m.name))
+            Description = "$($m.description)"
+        }
+    })
+
+    $recommended = @($rows | Where-Object { $_.Index -le $catalog.Count -and $_.Tier -eq 'recommended' })
+    $default = if ($recommended.Count -gt 0) { $recommended[-1] } elseif ($rows.Count -gt 0) { $rows[0] } else { $null }
+    return @{ Rows = $rows; Default = $default }
+}
+
 function Select-Models {
     $path = $ModelsFile
     if (-not $path -and $PSScriptRoot) { $path = Join-Path $PSScriptRoot 'models.json' }
 
     Write-Step 'Choose Ollama models'
-    $catalog = @(Get-ModelCatalog $path | Sort-Object { [double]$_.size_gb }, name)
+    $catalog = @(Get-ModelCatalog $path)
     $budget  = Get-ModelBudget
     if ($budget) {
         Write-Info "Detected: $($budget.Source). Recommending models that need up to $($budget.Budget) GB."
@@ -563,29 +650,9 @@ function Select-Models {
     $installed = Get-InstalledModels
     if ($installed.Count -gt 0) { Write-Info "Already downloaded: $($installed.Count) model(s)." }
 
-    # Downloaded models that aren't in the catalog are listed too, after the catalog entries.
-    $catalogKeys = @($catalog | ForEach-Object { ConvertTo-ModelKey $_.name })
-    $extras = @($installed.Keys | Where-Object { $catalogKeys -notcontains $_ } | ForEach-Object {
-        $name = $installed[$_].Name -replace ':latest$', ''
-        [pscustomobject]@{ name = $name; description = 'Downloaded earlier (not in models.json)'; size_gb = $installed[$_].Size }
-    } | Sort-Object { [double]$_.size_gb }, name)
-
-    $all  = @($catalog) + @($extras)
-    $rows = @(for ($i = 0; $i -lt $all.Count; $i++) {
-        $m = $all[$i]
-        [pscustomobject]@{
-            Index       = $i + 1
-            Name        = "$($m.name)"
-            Size        = $m.size_gb
-            Tier        = Get-ModelTier $m $budget
-            Installed   = $installed.ContainsKey((ConvertTo-ModelKey $m.name))
-            Description = "$($m.description)"
-        }
-    })
-
-    # Default: the largest recommended catalog model, else the smallest one.
-    $recommended = @($rows | Where-Object { $_.Index -le $catalog.Count -and $_.Tier -eq 'recommended' })
-    $default = if ($recommended.Count -gt 0) { $recommended[-1] } else { $rows[0] }
+    $table   = Get-ModelRows $catalog $installed $budget
+    $rows    = $table.Rows
+    $default = $table.Default
 
     $interactive = Test-Interactive
     if ($interactive -and (Test-MenuSupported)) {
@@ -712,7 +779,8 @@ function Wait-OllamaServer([string]$OllamaExe) {
     }
 
     Write-Info "Starting 'ollama serve' in the background"
-    $log = Join-Path ([System.IO.Path]::GetTempPath()) 'ollama-serve.log'
+    # Per-run directory: a fixed name in a shared temp folder could be pre-created as a symlink.
+    $log = Join-Path (New-TempDir) 'ollama-serve.log'
     $startArgs = @{
         FilePath               = $OllamaExe
         ArgumentList           = 'serve'
@@ -770,7 +838,26 @@ function Test-DockerInstalled {
     return (Test-Command 'docker') -or (Test-Path '/opt/docker-desktop')
 }
 
+function Add-DockerUsersMember([string]$User) {
+    # Add-LocalGroupMember tells "already a member" apart from real errors; net.exe exits 2 for both.
+    if (-not (Confirm-Action 'docker-users' "Add $User to the local group")) { return }
+    try {
+        Add-LocalGroupMember -Group 'docker-users' -Member $User -ErrorAction Stop
+        Write-Ok "Added $User to docker-users"
+        Add-Note ('Sign out and back in (or reboot) so the docker-users group membership takes effect, then start Docker Desktop.')
+    } catch {
+        if ("$($_.FullyQualifiedErrorId) $($_.Exception.Message)" -match 'MemberExists|already a member') {
+            Write-Ok "$User is already in docker-users"
+        } else {
+            Write-Warn "Could not add $User to docker-users: $($_.Exception.Message)"
+            Add-Note ("Ask an administrator to add $User to the local 'docker-users' group.")
+        }
+    }
+}
+
 function Install-DockerWindows {
+    # wsl.exe prints UTF-16 unless asked for UTF-8, which shows up as spaced-out text.
+    $env:WSL_UTF8 = '1'
     # WSL2 is required by the default Docker Desktop backend.
     $wslReady = $false
     if (Test-Command 'wsl.exe') {
@@ -783,7 +870,7 @@ function Install-DockerWindows {
     if (-not $wslReady) {
         Write-Info 'WSL2 not detected; installing it (no Linux distribution)'
         Invoke-Native -FilePath 'wsl.exe' -ArgumentList @('--install', '--no-distribution')
-        $script:Notes.Add('Reboot Windows to finish the WSL2 install before starting Docker Desktop.')
+        Add-Note ('Reboot Windows to finish the WSL2 install before starting Docker Desktop.')
     }
 
     $ok = Install-WithWinget 'Docker.DockerDesktop'
@@ -799,15 +886,8 @@ function Install-DockerWindows {
         } finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false }
     }
 
-    $targetUser = Get-TargetUser
-    try {
-        # Exit code 2 = user is already a member.
-        Invoke-Native -FilePath 'net' -ArgumentList @('localgroup', 'docker-users', $targetUser, '/add') -AllowedExitCodes @(0, 2)
-    } catch {
-        Write-Warn "Could not add $targetUser to docker-users: $($_.Exception.Message)"
-    }
+    Add-DockerUsersMember (Get-TargetUser)
     Update-SessionPath
-    $script:Notes.Add('Sign out and back in (or reboot) so the docker-users group membership takes effect, then start Docker Desktop.')
 }
 
 function Install-DockerMac {
@@ -829,7 +909,7 @@ function Install-DockerMac {
         if ($attached) { try { & hdiutil detach $mount -quiet | Out-Null } catch { Write-Warn "Could not detach $mount" } }
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false
     }
-    $script:Notes.Add('Open Docker Desktop once (/Applications/Docker.app) to finish setup.')
+    Add-Note ('Open Docker Desktop once (/Applications/Docker.app) to finish setup.')
 }
 
 function Get-OsRelease {
@@ -897,7 +977,7 @@ function Install-DockerEngineLinux {
     if (-not $user) { $user = $env:USER }
     if ($user -and $user -ne 'root') {
         Invoke-Sudo -FilePath 'usermod' -ArgumentList @('-aG', 'docker', $user)
-        $script:Notes.Add("Log out and back in so '$user' can run docker without sudo.")
+        Add-Note ("Log out and back in so '$user' can run docker without sudo.")
     }
 }
 
@@ -927,7 +1007,7 @@ function Install-DockerLinux {
 
     try {
         if ($family -eq 'debian') { Install-DockerDesktopDebian $os } else { Install-DockerDesktopFedora }
-        $script:Notes.Add('Start Docker Desktop from your applications menu (or: systemctl --user start docker-desktop).')
+        Add-Note ('Start Docker Desktop from your applications menu (or: systemctl --user start docker-desktop).')
         return 'installed (Desktop)'
     } catch {
         Write-Warn "Docker Desktop install failed ($($_.Exception.Message)); falling back to Docker Engine"
@@ -964,45 +1044,10 @@ function Invoke-Main {
     $osName = if ($script:OnWindows) { 'Windows' } elseif ($script:OnMac) { 'macOS' } else { 'Linux' }
     Write-Host "Docker + Ollama installer  |  OS: $osName  |  Arch: $(Get-Arch)  |  PowerShell $($PSVersionTable.PSVersion)"
 
-    # Ask which models to pull. Runs before the Windows elevation so the prompt appears in the
-    # user's own console; the answer is forwarded to the elevated process via $script:ScriptBoundParameters.
+    # Ask which models to pull before anything is installed, so the rest runs unattended.
     if (-not $script:SkipModels -and -not $script:ScriptBoundParameters.ContainsKey('Models')) {
         $script:Models = @(Select-Models)
-        if ($script:Models.Count -eq 0) {
-            $script:SkipModels = [switch]$true
-            $script:ScriptBoundParameters['SkipModels'] = [switch]$true
-        } else {
-            $script:ScriptBoundParameters['Models'] = $script:Models
-        }
-    }
-
-    # Windows: re-launch elevated (installers need admin). Skipped for -WhatIf dry runs.
-    if ($script:OnWindows -and -not $WhatIfPreference) {
-        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            if (-not $PSCommandPath) {
-                throw 'Self-elevation on Windows requires running install.ps1 from a file. Save the script locally or run from an elevated PowerShell.'
-            }
-            if (-not $script:ScriptBoundParameters.ContainsKey('InvokingUser') -and $env:USERNAME) {
-                $script:ScriptBoundParameters['InvokingUser'] = $env:USERNAME
-            }
-            if (-not $script:ScriptBoundParameters.ContainsKey('InvokingProfile') -and $env:USERPROFILE) {
-                $script:ScriptBoundParameters['InvokingProfile'] = $env:USERPROFILE
-            }
-            Write-Host 'Re-launching as Administrator...'
-            $hostExe = (Get-Process -Id $PID).Path
-            $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-            foreach ($kv in $script:ScriptBoundParameters.GetEnumerator()) {
-                if ($kv.Value -is [System.Management.Automation.SwitchParameter]) {
-                    if ($kv.Value.IsPresent) { $argList += "-$($kv.Key)" }
-                } else {
-                    $argList += "-$($kv.Key)"
-                    $argList += "`"$(@($kv.Value) -join ',')`""
-                }
-            }
-            $p = Start-Process -FilePath $hostExe -ArgumentList $argList -Verb RunAs -Wait -PassThru
-            exit $p.ExitCode
-        }
+        if ($script:Models.Count -eq 0) { $script:SkipModels = [switch]$true }
     }
 
     $steps = @(
@@ -1011,8 +1056,25 @@ function Invoke-Main {
         @{ Name = 'Docker';  Skip = [bool]$script:SkipDocker; Action = { Install-Docker } }
     )
 
+    # Windows: only WSL/Docker need admin. Ollama installs per user, so it and the model pulls run
+    # here, as the signed-in user, and only the Docker step is re-launched elevated. (Elevating
+    # everything would install Ollama into the admin's profile when someone else types the admin
+    # password.) Skipped for -WhatIf dry runs.
+    $elevateDocker = $false
+    if ($script:OnWindows -and -not $WhatIfPreference -and -not $script:SkipDocker) {
+        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        $elevateDocker = -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if ($elevateDocker -and -not $PSCommandPath) {
+            throw 'Self-elevation on Windows requires running install.ps1 from a file. Save the script locally or run from an elevated PowerShell.'
+        }
+    }
+
     foreach ($step in $steps) {
         if ($step.Skip) { $script:Results[$step.Name] = 'skipped'; continue }
+        if ($elevateDocker -and $step.Name -eq 'Docker') {
+            $script:Results['Docker'] = Invoke-ElevatedDockerStep
+            continue
+        }
         try {
             $out = & $step.Action
             $script:Results[$step.Name] = "$(@($out)[-1])"
@@ -1020,6 +1082,15 @@ function Invoke-Main {
             Write-Warn "$($step.Name) failed: $($_.Exception.Message)"
             $script:Results[$step.Name] = "FAILED: $($_.Exception.Message)"
         }
+    }
+
+    if ($ResultFile) {
+        # Running elevated on behalf of a non-admin console: hand the results back to it.
+        @{ Results = $script:Results; Notes = @($script:Notes) } | ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath $ResultFile -Encoding UTF8 -WhatIf:$false
+        $failedSteps = @($script:Results.Values | Where-Object { $_ -like 'FAILED*' })
+        if ($failedSteps.Count -gt 0) { exit 1 }
+        exit 0
     }
 
     Write-Step 'Summary'
@@ -1036,6 +1107,38 @@ function Invoke-Main {
     $failedSteps = @($script:Results.Values | Where-Object { $_ -like 'FAILED*' })
     if ($failedSteps.Count -gt 0) { exit 1 }
     exit 0
+}
+
+function Invoke-ElevatedDockerStep {
+    # Re-launches this script elevated for the Docker step only and returns its result. The
+    # elevated process writes its results and notes to a file, so the summary appears here.
+    Write-Step 'Docker'
+    Write-Info 'Docker Desktop needs administrator rights; approve the Windows prompt to continue.'
+    $tmp = New-TempDir
+    $resultPath = Join-Path $tmp 'result.json'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
+                 '-SkipOllama', '-SkipModels',
+                 '-InvokingUser', "`"$(Get-WindowsAccountName)`"",
+                 '-InvokingProfile', "`"$env:USERPROFILE`"",
+                 '-ResultFile', "`"$resultPath`"")
+    if ($script:DockerEngine) { $argList += '-DockerEngine' }
+    try {
+        $hostExe = (Get-Process -Id $PID).Path
+        try {
+            $p = Start-Process -FilePath $hostExe -ArgumentList $argList -Verb RunAs -Wait -PassThru
+        } catch {
+            return "FAILED: could not start the elevated installer ($($_.Exception.Message))"
+        }
+        if (-not (Test-Path -LiteralPath $resultPath)) {
+            return "FAILED: the elevated installer exited with code $($p.ExitCode) without reporting a result"
+        }
+        $report = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        foreach ($n in @($report.Notes)) { if ($n) { $script:Notes.Add("$n") } }
+        $docker = "$($report.Results.Docker)"
+        if ($docker -like 'FAILED*') { Write-Warn "Docker $docker" } elseif ($docker) { Write-Ok $docker }
+        if ($docker) { return $docker }
+        return 'FAILED: no Docker result'
+    } finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {

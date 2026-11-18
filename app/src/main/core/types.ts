@@ -41,18 +41,21 @@ export interface ProbeResult {
   models: ModelRow[];
 }
 
+/** Options the renderer may send. The log path is chosen by the main process, never the renderer. */
 export interface InstallOptions {
   installOllama: boolean;
   installDocker: boolean;
   dockerEngineOnLinux: boolean;
   models: string[];
   dryRun?: boolean;
-  logPath?: string;
 }
 
+export type StepName = 'Ollama' | 'Models' | 'Docker';
+export type StepStatus = 'running' | 'done' | 'skipped' | 'failed' | 'cancelled';
+
 export type InstallEvent =
-  | { type: 'step'; step: 'Ollama' | 'Models' | 'Docker'; status: 'running' | 'done' | 'skipped' | 'failed'; detail?: string }
-  | { type: 'progress'; step: 'Ollama' | 'Models' | 'Docker'; label: string; completed?: number; total?: number; percent?: number }
+  | { type: 'step'; step: StepName; status: StepStatus; detail?: string }
+  | { type: 'progress'; step: StepName; label: string; completed?: number; total?: number; percent?: number }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string; timestamp: string }
   | { type: 'note'; message: string }
-  | { type: 'summary'; results: Record<string, string>; notes: string[]; exitCode: number };
+  | { type: 'summary'; results: Record<string, string>; notes: string[]; exitCode: number; cancelled: boolean; logPath?: string };

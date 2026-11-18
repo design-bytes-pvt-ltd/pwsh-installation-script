@@ -61,8 +61,31 @@ To add a model, add an entry to `models.json`:
 
 `name` is the Ollama tag and is the only required field. `size_gb` is the download size. `min_memory_gb` is the memory needed to run the model comfortably. If you leave it out, the script estimates it as `size_gb × 1.2 + 1`.
 
+## Desktop app and CLI
+There are two front ends for the same install:
+
+| | Desktop app (`app/`) | CLI (`install.ps1`) |
+|---|---|---|
+| For | People who want a GUI installer | Servers, CI and admins who want a one-liner |
+| Engine | TypeScript, in `app/src/main/core/` (**canonical**) | PowerShell, kept in sync with the app |
+| Needs | Nothing (Electron app) | PowerShell (built into Windows; `pwsh` on macOS/Linux) |
+
+The model rules (tiers, the memory budget, the default model and the table order) must match. [`tests/fixtures/model-rows.parity.json`](tests/fixtures/model-rows.parity.json) is a shared contract: both the Pester tests and the app's vitest tests check against it in CI. If you change those rules, update both implementations and the fixture.
+
+Both front ends ask for administrator rights only for the steps that need them. Ollama and the model pulls run as the signed-in user, and Docker (plus WSL2 on Windows) asks once through UAC, the macOS password dialog, or pkexec/zenity on Linux.
+
+### Running the desktop app
+```sh
+cd app
+npm ci
+npm start        # build and open the app
+npm test         # unit + parity tests
+npm run dist     # build installers (nsis / dmg / AppImage) into app/release
+```
+Logs are written to the OS log folder (for example `~/Library/Logs/docker-ollama-installer` on macOS). The summary screen links to the log file.
+
 ## Requirements
-- **Windows:** Windows PowerShell 5.1 (built in) or PowerShell 7+. The script restarts itself as Administrator.
+- **Windows:** Windows PowerShell 5.1 (built in) or PowerShell 7+. Ollama and models install as you. For the Docker step only, the script restarts itself as Administrator (one UAC prompt) and prints the combined summary in your original window.
 - **macOS / Linux:** PowerShell 7+ (`pwsh`). See [Install PowerShell](https://learn.microsoft.com/powershell/scripting/install/installing-powershell). Linux also needs `curl` and `sudo`.
 
 ## Usage

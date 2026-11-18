@@ -4,7 +4,7 @@ import { getModelBudget } from './hardware';
 import { buildModelRows, getInstalledModels, getOllamaBaseUrl, loadModelCatalog } from './models';
 import { getOllamaExe, installOllama, pullModelStream, waitForOllamaServer } from './ollama';
 import { getArch, getTargetOS } from './platform';
-import { InstallEvent, InstallOptions, ProbeResult } from './types';
+import { InstallEvent, InstallOptions, ProbeResult, StepName } from './types';
 
 export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
   const os = getTargetOS();
@@ -27,19 +27,67 @@ export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
   };
 }
 
+function formatForLog(event: InstallEvent): string | null {
+  switch (event.type) {
+    case 'log':
+      return `[${event.level.toUpperCase()}] ${event.message}`;
+    case 'step':
+      return `[STEP] ${event.step}: ${event.status}${event.detail ? ` (${event.detail})` : ''}`;
+    case 'note':
+      return `[NOTE] ${event.message}`;
+    case 'summary':
+      return `[SUMMARY] ${JSON.stringify(event.results)} exitCode=${event.exitCode}${event.cancelled ? ' (cancelled)' : ''}`;
+    default:
+      return null; // progress events are too chatty for the log file
+  }
+}
+
+/** Pulls each model, continuing past failures. Returns the names that failed. */
+async function pullModels(
+  models: string[],
+  emit: (event: InstallEvent) => void,
+  signal?: AbortSignal
+): Promise<string[]> {
+  const exe = await getOllamaExe();
+  if (!exe) throw new Error('Ollama is not installed; cannot pull models.');
+  const baseUrl = getOllamaBaseUrl();
+  await waitForOllamaServer(exe, baseUrl, emit, signal);
+
+  const failed: string[] = [];
+  for (const model of models) {
+    if (signal?.aborted) break;
+    try {
+      await pullModelStream(
+        model,
+        baseUrl,
+        (p) => emit({ type: 'progress', step: 'Models', label: `${model}: ${p.status}`, completed: p.completed, total: p.total, percent: p.percent }),
+        signal
+      );
+      emit({ type: 'log', level: 'info', message: `Pulled ${model}`, timestamp: new Date().toISOString() });
+    } catch (err) {
+      if (signal?.aborted) break;
+      emit({ type: 'log', level: 'warn', message: `Failed to pull ${model}: ${(err as Error).message}`, timestamp: new Date().toISOString() });
+      failed.push(model);
+    }
+  }
+  return failed;
+}
+
 export async function runInstall(
   options: InstallOptions,
   emit: (event: InstallEvent) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  logPath?: string
 ): Promise<void> {
   const results: Record<string, string> = {};
   const notes: string[] = [];
 
   const forward = (event: InstallEvent) => {
     if (event.type === 'note') notes.push(event.message);
-    if (options.logPath && event.type === 'log') {
+    const line = logPath ? formatForLog(event) : null;
+    if (line) {
       try {
-        fs.appendFileSync(options.logPath, `[${event.timestamp}] [${event.level.toUpperCase()}] ${event.message}\n`);
+        fs.appendFileSync(logPath!, `[${new Date().toISOString()}] ${line}\n`);
       } catch {
         // Ignore log write failures
       }
@@ -47,86 +95,62 @@ export async function runInstall(
     emit(event);
   };
 
-  // Step 1: Ollama
-  if (!options.installOllama) {
-    results.Ollama = 'skipped';
-    forward({ type: 'step', step: 'Ollama', status: 'skipped' });
-  } else {
-    forward({ type: 'step', step: 'Ollama', status: 'running' });
-    try {
-      const status = await installOllama({ dryRun: options.dryRun, signal, emit: forward });
-      results.Ollama = status;
-      forward({ type: 'step', step: 'Ollama', status: 'done', detail: status });
-    } catch (err) {
-      const msg = (err as Error).message;
-      results.Ollama = `FAILED: ${msg}`;
-      forward({ type: 'step', step: 'Ollama', status: 'failed', detail: msg });
+  /** Runs one step, turning errors into FAILED and an abort into "cancelled". */
+  const runStep = async (step: StepName, skip: string | null, action: () => Promise<string>) => {
+    if (signal?.aborted) {
+      results[step] = 'cancelled';
+      forward({ type: 'step', step, status: 'cancelled' });
+      return;
     }
-  }
-
-  // Step 2: Models
-  if (options.models.length === 0) {
-    results.Models = 'skipped';
-    forward({ type: 'step', step: 'Models', status: 'skipped' });
-  } else if (options.dryRun) {
-    results.Models = 'would pull';
-    forward({ type: 'step', step: 'Models', status: 'done', detail: `would pull: ${options.models.join(', ')}` });
-  } else {
-    forward({ type: 'step', step: 'Models', status: 'running' });
+    if (skip) {
+      results[step] = 'skipped';
+      forward({ type: 'step', step, status: 'skipped', detail: skip === 'skipped' ? undefined : skip });
+      return;
+    }
+    forward({ type: 'step', step, status: 'running' });
     try {
-      const exe = await getOllamaExe();
-      if (!exe) throw new Error('Ollama is not installed; cannot pull models.');
-      const baseUrl = getOllamaBaseUrl();
-      await waitForOllamaServer(exe, baseUrl, forward, signal);
-
-      for (const model of options.models) {
-        await pullModelStream(
-          model,
-          baseUrl,
-          (p) =>
-            forward({
-              type: 'progress',
-              step: 'Models',
-              label: `${model}: ${p.status}`,
-              completed: p.completed,
-              total: p.total,
-              percent: p.percent,
-            }),
-          signal
-        );
+      const status = await action();
+      if (signal?.aborted) throw new Error('Cancelled');
+      results[step] = status;
+      forward({ type: 'step', step, status: 'done', detail: status });
+    } catch (err) {
+      if (signal?.aborted) {
+        results[step] = 'cancelled';
+        forward({ type: 'step', step, status: 'cancelled' });
+        return;
       }
-      results.Models = 'pulled';
-      forward({ type: 'step', step: 'Models', status: 'done', detail: 'pulled' });
-    } catch (err) {
       const msg = (err as Error).message;
-      results.Models = `FAILED: ${msg}`;
-      forward({ type: 'step', step: 'Models', status: 'failed', detail: msg });
+      results[step] = `FAILED: ${msg}`;
+      forward({ type: 'step', step, status: 'failed', detail: msg });
     }
-  }
+  };
 
-  // Step 3: Docker
-  if (!options.installDocker) {
-    results.Docker = 'skipped';
-    forward({ type: 'step', step: 'Docker', status: 'skipped' });
-  } else {
-    forward({ type: 'step', step: 'Docker', status: 'running' });
-    try {
-      const status = await installDocker({
-        dockerEngineOnLinux: options.dockerEngineOnLinux,
-        dryRun: options.dryRun,
-        signal,
-        emit: forward,
-      });
-      results.Docker = status;
-      forward({ type: 'step', step: 'Docker', status: 'done', detail: status });
-    } catch (err) {
-      const msg = (err as Error).message;
-      results.Docker = `FAILED: ${msg}`;
-      forward({ type: 'step', step: 'Docker', status: 'failed', detail: msg });
+  await runStep('Ollama', options.installOllama ? null : 'skipped', () =>
+    installOllama({ dryRun: options.dryRun, signal, emit: forward })
+  );
+
+  await runStep('Models', options.models.length === 0 ? 'skipped' : null, async () => {
+    if (options.dryRun) {
+      forward({ type: 'log', level: 'info', message: `[dry-run] Would pull: ${options.models.join(', ')}`, timestamp: new Date().toISOString() });
+      return 'would pull';
     }
-  }
+    const failed = await pullModels(options.models, forward, signal);
+    if (failed.length > 0) throw new Error(`Failed to pull: ${failed.join(', ')}`);
+    return 'pulled';
+  });
 
-  const uniqueNotes = Array.from(new Set(notes));
+  await runStep('Docker', options.installDocker ? null : 'skipped', () =>
+    installDocker({ dockerEngineOnLinux: options.dockerEngineOnLinux, dryRun: options.dryRun, signal, emit: forward })
+  );
+
+  const cancelled = Boolean(signal?.aborted);
   const hasFailures = Object.values(results).some((v) => v.startsWith('FAILED:'));
-  forward({ type: 'summary', results, notes: uniqueNotes, exitCode: hasFailures ? 1 : 0 });
+  forward({
+    type: 'summary',
+    results,
+    notes: Array.from(new Set(notes)),
+    exitCode: hasFailures || cancelled ? 1 : 0,
+    cancelled,
+    logPath,
+  });
 }

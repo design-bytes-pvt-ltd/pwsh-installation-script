@@ -90,3 +90,43 @@ Describe 'Get-OllamaBaseUrl' {
         Get-OllamaBaseUrl | Should -Be 'https://ollama.internal:8443'
     }
 }
+
+Describe 'Parity with the Electron app (tests/fixtures/model-rows.parity.json)' {
+    BeforeDiscovery {
+        $fixture = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'tests/fixtures/model-rows.parity.json') -Raw | ConvertFrom-Json
+        $script:RowCases    = @($fixture.rowCases | ForEach-Object { @{ Case = $_ } })
+        $script:BudgetCases = @($fixture.budgetCases | ForEach-Object { @{ Case = $_ } })
+    }
+
+    BeforeAll {
+        $script:Fixture = Get-Content (Join-Path $script:RepoRoot 'tests/fixtures/model-rows.parity.json') -Raw | ConvertFrom-Json
+        $script:Installed = @{}
+        foreach ($m in $script:Fixture.installed) { $script:Installed[$m.key] = @{ Name = $m.name; Size = $m.sizeGB } }
+    }
+
+    It 'builds the same rows: <Case.label>' -ForEach $script:RowCases {
+        $budget = if ($Case.budget) { @{ Budget = [double]$Case.budget.budgetGB; Ram = [double]$Case.budget.ramGB } } else { $null }
+        $table = Get-ModelRows $script:Fixture.catalog $script:Installed $budget
+        @($table.Rows | ForEach-Object { $_.Name }) | Should -Be @($script:Fixture.rowOrder)
+        @($table.Rows | ForEach-Object { $_.Tier }) | Should -Be @($Case.tiers)
+        $table.Default.Name | Should -Be $Case.default
+        @($table.Rows | Where-Object { $_.Installed } | ForEach-Object { $_.Name }) | Should -Be @($script:Fixture.installedNames)
+    }
+
+    It 'computes the same budget: ram=<Case.ramGB> apple=<Case.appleSilicon>' -ForEach $script:BudgetCases {
+        $gpu = if ($Case.gpu) { @{ Vendor = $Case.gpu.vendor; VramGB = [double]$Case.gpu.vramGB } } else { $null }
+        $ram = if ($null -ne $Case.ramGB) { [double]$Case.ramGB } else { $null }
+        $budget = ConvertTo-ModelBudget $ram $gpu ([bool]$Case.appleSilicon)
+        if ($null -eq $Case.expected) {
+            $budget | Should -BeNullOrEmpty
+        } else {
+            $budget.Budget | Should -Be ([double]$Case.expected.budgetGB)
+            $budget.Source | Should -Be $Case.expected.source
+        }
+    }
+
+    It 'parses GPU tool output the same way' {
+        ConvertFrom-NvidiaSmi ($script:Fixture.gpuParsing.nvidiaSmi.output -split "`n") | Should -Be $script:Fixture.gpuParsing.nvidiaSmi.expectedGB
+        ConvertFrom-RocmSmiJson $script:Fixture.gpuParsing.rocmSmi.output | Should -Be $script:Fixture.gpuParsing.rocmSmi.expectedGB
+    }
+}

@@ -65,6 +65,10 @@ button { border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; f
 .badge.running { background: var(--accent); }
 .badge.done { background: var(--green); color: #052e16; }
 .badge.failed { background: var(--red); }
+.badge.cancelled { background: var(--yellow); color: #422006; }
+[hidden] { display: none !important; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+#summary-log { word-break: break-all; margin-right: 12px; }
 
 .progress-wrap { margin: 12px 0; }
 .progress-bar { height: 10px; background: #0f172a; border-radius: 999px; overflow: hidden; margin-top: 6px; }

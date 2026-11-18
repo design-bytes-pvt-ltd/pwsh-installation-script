@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>Docker + Ollama Installer</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -31,7 +32,7 @@
           <input type="checkbox" id="opt-docker" checked />
           <span>Install Docker <small id="status-docker"></small></span>
         </label>
-        <label class="toggle" id="wrap-docker-engine" style="display: none;">
+        <label class="toggle" id="wrap-docker-engine" hidden>
           <input type="checkbox" id="opt-docker-engine" />
           <span>Use Docker Engine instead of Desktop (Linux)</span>
         </label>
@@ -46,7 +47,7 @@
           <h2>Select Ollama Models</h2>
           <div class="actions">
             <button id="btn-select-none" class="btn-secondary" type="button">Select None</button>
-            <button id="btn-select-rec" class="btn-secondary" type="button">Recommended</button>
+            <button id="btn-select-rec" class="btn-secondary" type="button">Reset to default</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -101,13 +102,16 @@
       <div class="card">
         <h2 id="summary-title">Setup Complete</h2>
         <div id="summary-results" class="step-list"></div>
-        <div id="summary-notes-wrap" style="display: none;">
+        <div id="summary-notes-wrap" hidden>
           <h3>Next Steps</h3>
           <ul id="summary-notes" class="notes-list"></ul>
         </div>
         <div class="footer-bar">
-          <span></span>
-          <button id="btn-restart" class="btn-secondary" type="button">Back to Start</button>
+          <span id="summary-log" class="subtitle"></span>
+          <div class="actions">
+            <button id="btn-show-log" class="btn-secondary" type="button">Show log file</button>
+            <button id="btn-restart" class="btn-secondary" type="button">Back to Start</button>
+          </div>
         </div>
       </div>
     </section>

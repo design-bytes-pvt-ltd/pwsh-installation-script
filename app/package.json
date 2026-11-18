@@ -12,9 +12,8 @@
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder"
   },
-  "dependencies": {},
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.5",
     "electron": "^35.0.0",
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.0",
@@ -24,8 +23,13 @@
   "build": {
     "appId": "com.local.docker-ollama-installer",
     "productName": "Docker + Ollama Installer",
+    "directories": {
+      "output": "release"
+    },
     "files": [
-      "dist/**/*",
+      "dist/main/**/*",
+      "dist/renderer/**/*",
+      "!dist/main/**/__tests__/**",
       "package.json"
     ],
     "extraResources": [
@@ -35,13 +39,24 @@
       }
     ],
     "win": {
-      "target": ["portable"]
+      "target": [
+        "nsis"
+      ]
     },
     "mac": {
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ]
     },
     "linux": {
-      "target": ["AppImage"]
+      "target": [
+        "AppImage"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
     }
   }
 }

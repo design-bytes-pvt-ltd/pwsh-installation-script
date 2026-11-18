@@ -4,7 +4,9 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { computeModelBudget, parseNvidiaSmiOutput, parseRocmSmiJson } from '../hardware';
 import { buildModelRows, getModelMinMemory, getModelTier, getOllamaBaseUrl, loadModelCatalog, normalizeModelKey } from '../models';
-import { parseOsRelease } from '../platform';
+import { buildEngineScript, buildWindowsDockerScript } from '../docker';
+import { parsePullLine } from '../ollama';
+import { getTargetUser, isWindowsArm64, LineSplitter, parseOsRelease, quoteAppleScript, quotePs, quoteSh } from '../platform';
 
 describe('hardware', () => {
   it('parses nvidia-smi MiB output into GB', () => {
@@ -64,7 +66,10 @@ describe('models', () => {
   it('loads models.json and falls back on missing/invalid files', () => {
     const repoModels = path.resolve(__dirname, '../../../../../models.json');
     const catalog = loadModelCatalog(repoModels);
-    expect(catalog.length).toBeGreaterThan(0);
+    // Compare with the file itself: a count of 1 would mean we silently got the fallback.
+    const expected = JSON.parse(fs.readFileSync(repoModels, 'utf8')).models.length;
+    expect(expected).toBeGreaterThan(1);
+    expect(catalog.length).toBe(expected);
 
     const tmpFile = path.join(os.tmpdir(), `bad-models-${Date.now()}.json`);
     fs.writeFileSync(tmpFile, '{bad');
@@ -91,5 +96,78 @@ describe('platform', () => {
     expect(parsed.ID).toBe('ubuntu');
     expect(parsed.ID_LIKE).toBe('debian');
     expect(parsed.VERSION_CODENAME).toBe('noble');
+  });
+});
+
+describe('LineSplitter', () => {
+  const collect = (chunks: string[]) => {
+    const lines: string[] = [];
+    const splitter = new LineSplitter((l) => lines.push(l));
+    chunks.forEach((c) => splitter.push(c));
+    splitter.flush();
+    return lines;
+  };
+
+  it('joins lines split across chunks', () => {
+    expect(collect(['hel', 'lo\nwor', 'ld\n'])).toEqual(['hello', 'world']);
+  });
+
+  it('keeps only the final frame of \\r progress output and handles CRLF', () => {
+    expect(collect(['  10%\r  50%\r 100%\r\n', 'done\r\n'])).toEqual([' 100%', 'done']);
+  });
+
+  it('strips ANSI colors, backspaces and a BOM', () => {
+    expect(collect(['\uFEFF\x1b[32mok\x1b[0m\n', 'spin|\b/\n'])).toEqual(['ok', 'spin/']);
+  });
+
+  it('flushes a trailing line without a newline', () => {
+    expect(collect(['last line'])).toEqual(['last line']);
+  });
+});
+
+describe('quoting', () => {
+  it('quotes for sh, PowerShell and AppleScript', () => {
+    expect(quoteSh("it's")).toBe(`'it'\\''s'`);
+    expect(quotePs("O'Brien")).toBe(`'O''Brien'`);
+    expect(quoteAppleScript('say "hi" \\ bye')).toBe('"say \\"hi\\" \\\\ bye"');
+  });
+});
+
+describe('getTargetUser / isWindowsArm64', () => {
+  it('uses DOMAIN\\user on Windows and SUDO_USER on Unix', () => {
+    expect(getTargetUser({ USERNAME: 'ann', USERDOMAIN: 'CORP' }, 'windows')).toBe('CORP\\ann');
+    expect(getTargetUser({ USERNAME: 'ann' }, 'windows')).toBe('ann');
+    expect(getTargetUser({ USER: 'root', SUDO_USER: 'ann' }, 'linux')).toBe('ann');
+  });
+
+  it('detects ARM64 Windows under x64 emulation', () => {
+    expect(isWindowsArm64({ PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_IDENTIFIER: 'ARMv8 (64-bit) Family 8' })).toBe(true);
+    expect(isWindowsArm64({ PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_IDENTIFIER: 'Intel64 Family 6' })).toBe(false);
+  });
+});
+
+describe('parsePullLine', () => {
+  it('computes percent and surfaces errors', () => {
+    expect(parsePullLine('{"status":"pulling abc","completed":50,"total":200}')).toMatchObject({ status: 'pulling abc', percent: 25 });
+    expect(parsePullLine('{"status":"success"}').status).toBe('success');
+    expect(() => parsePullLine('{"error":"pull model manifest: file does not exist"}')).toThrow(/file does not exist/);
+  });
+});
+
+describe('privileged scripts', () => {
+  it('Engine script keeps going when the group or service step fails', () => {
+    const script = buildEngineScript('/tmp/x/get-docker.sh', "o'neil");
+    expect(script).toContain(`sh '/tmp/x/get-docker.sh'`);
+    expect(script).toContain(`usermod -aG docker 'o'\\''neil'`);
+    expect(script).toMatch(/systemctl enable --now docker \|\| echo/);
+  });
+
+  it('Windows script installs WSL only when needed and uses Add-LocalGroupMember', () => {
+    const withWsl = buildWindowsDockerScript({ installWsl: true, arch: 'amd64', targetUser: "CORP\\o'neil" });
+    expect(withWsl).toContain("'--install', '--no-distribution'");
+    expect(withWsl).toContain("$user = 'CORP\\o''neil'");
+    expect(withWsl).toContain('Add-LocalGroupMember');
+    expect(withWsl).not.toContain('net localgroup');
+    expect(buildWindowsDockerScript({ installWsl: false, arch: 'arm64', targetUser: 'ann' })).not.toContain('wsl.exe');
   });
 });

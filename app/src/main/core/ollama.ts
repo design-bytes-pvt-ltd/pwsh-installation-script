@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { downloadFile } from './downloader';
 import { getOllamaBaseUrl } from './models';
@@ -9,7 +8,10 @@ import {
   createTempDir,
   execCommand,
   execPrivileged,
+  execPrivilegedScript,
   getTargetOS,
+  quotePs,
+  quoteSh,
   removeDirSafe,
 } from './platform';
 import { InstallEvent, TargetOS } from './types';
@@ -66,7 +68,8 @@ export async function waitForOllamaServer(
   }
 
   logMsg("Starting 'ollama serve' in the background...");
-  const logFile = path.join(os.tmpdir(), 'ollama-serve.log');
+  // Per-run directory: a fixed name in a shared /tmp could be pre-created as a symlink.
+  const logFile = path.join(createTempDir('ollama-serve-'), 'ollama-serve.log');
   const out = fs.openSync(logFile, 'a');
   const err = fs.openSync(`${logFile}.err`, 'a');
   const child = spawn(ollamaExe, ['serve'], {
@@ -82,6 +85,18 @@ export async function waitForOllamaServer(
     if (await isOllamaServerRunning(baseUrl)) return;
   }
   throw new Error(`Ollama server did not become reachable on ${baseUrl} (see ${logFile}.err).`);
+}
+
+/** Throws unless the file carries a valid Authenticode signature (Windows). */
+async function verifyAuthenticode(file: string, exec: { signal?: AbortSignal; onOutput?: (line: string) => void }): Promise<void> {
+  const ps =
+    `$s = Get-AuthenticodeSignature -FilePath ${quotePs(file)}; ` +
+    `"Signature: $($s.Status) $($s.SignerCertificate.Subject)"; if ($s.Status -ne 'Valid') { exit 1 }`;
+  try {
+    await execCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], exec);
+  } catch {
+    throw new Error(`Refusing to run ${path.basename(file)}: its digital signature is missing or invalid.`);
+  }
 }
 
 export async function installOllama(options: {
@@ -127,6 +142,7 @@ export async function installOllama(options: {
           onProgress: (p) =>
             options.emit({ type: 'progress', step: 'Ollama', label: 'Downloading OllamaSetup.exe', completed: p.completed, total: p.total ?? undefined, percent: p.percent ?? undefined }),
         });
+        await verifyAuthenticode(exe, { signal: options.signal, onOutput });
         await execCommand(exe, ['/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES'], { signal: options.signal, onOutput });
       } finally {
         removeDirSafe(tmp);
@@ -141,19 +157,31 @@ export async function installOllama(options: {
         onProgress: (p) =>
           options.emit({ type: 'progress', step: 'Ollama', label: 'Downloading Ollama-darwin.zip', completed: p.completed, total: p.total ?? undefined, percent: p.percent ?? undefined }),
       });
+      // Extract and verify the signature before anything lands in /Applications.
+      const extracted = path.join(tmp, 'extracted');
+      await execCommand('ditto', ['-x', '-k', zip, extracted], { signal: options.signal, onOutput });
+      const app = path.join(extracted, 'Ollama.app');
+      await execCommand('codesign', ['--verify', '--deep', app], { signal: options.signal, onOutput });
       try {
-        await execCommand('ditto', ['-x', '-k', zip, '/Applications'], { signal: options.signal, onOutput });
+        await execCommand('ditto', [app, '/Applications/Ollama.app'], { signal: options.signal, onOutput });
       } catch {
-        await execPrivileged('ditto', ['-x', '-k', zip, '/Applications'], { signal: options.signal, onOutput });
+        await execPrivileged('ditto', [app, '/Applications/Ollama.app'], { signal: options.signal, onOutput });
       }
       await execCommand('open', ['-a', '/Applications/Ollama.app'], { signal: options.signal, onOutput });
     } finally {
       removeDirSafe(tmp);
     }
   } else {
-    const curl = await commandExists('curl', targetOS);
-    if (!curl) throw new Error('curl is required to install Ollama on Linux.');
-    await execCommand('sh', ['-c', 'curl -fsSL https://ollama.com/install.sh | sh'], { signal: options.signal, onOutput });
+    // install.sh calls sudo itself, which cannot prompt without a terminal. Run it as root
+    // instead (one graphical password prompt); as root it needs no sudo.
+    const tmp = createTempDir();
+    try {
+      const scriptPath = path.join(tmp, 'ollama-install.sh');
+      await downloadFile('https://ollama.com/install.sh', scriptPath, { signal: options.signal });
+      await execPrivilegedScript(`sh ${quoteSh(scriptPath)}`, { signal: options.signal, onOutput });
+    } finally {
+      removeDirSafe(tmp);
+    }
   }
 
   const exe = await getOllamaExe(targetOS);
@@ -164,26 +192,54 @@ export async function installOllama(options: {
   return 'installed';
 }
 
+export interface PullProgress {
+  status: string;
+  completed?: number;
+  total?: number;
+  percent?: number;
+}
+
+/** Parses one line of /api/pull NDJSON. Throws on an error chunk. */
+export function parsePullLine(line: string): PullProgress {
+  const chunk = JSON.parse(line) as { error?: string; status?: string; completed?: number; total?: number };
+  if (chunk.error) throw new Error(chunk.error);
+  const percent =
+    chunk.total && chunk.total > 0 && typeof chunk.completed === 'number'
+      ? Math.min(100, Math.round((chunk.completed / chunk.total) * 100))
+      : undefined;
+  return { status: chunk.status ?? 'pulling', completed: chunk.completed, total: chunk.total, percent };
+}
+
 export async function pullModelStream(
   modelName: string,
   baseUrl: string,
-  onProgress: (progress: { status: string; completed?: number; total?: number; percent?: number }) => void,
+  onProgress: (progress: PullProgress) => void,
   signal?: AbortSignal
 ): Promise<void> {
   const resp = await fetch(`${baseUrl}/api/pull`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: modelName, stream: true }),
+    body: JSON.stringify({ model: modelName, stream: true }),
     signal,
   });
 
   if (!resp.ok || !resp.body) {
-    throw new Error(`Failed to pull ${modelName}: HTTP ${resp.status} ${resp.statusText}`);
+    const detail = await resp.text().catch(() => '');
+    throw new Error(`Failed to pull ${modelName}: HTTP ${resp.status} ${resp.statusText} ${detail}`.trim());
   }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let lastStatus = '';
+
+  const handle = (rawLine: string) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    const progress = parsePullLine(line);
+    lastStatus = progress.status;
+    onProgress(progress);
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -191,22 +247,12 @@ export async function pullModelStream(
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
     buffer = lines.pop() ?? '';
+    lines.forEach(handle);
+  }
+  handle(buffer + decoder.decode());
 
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const chunk = JSON.parse(line) as { error?: string; status?: string; completed?: number; total?: number };
-      if (chunk.error) throw new Error(chunk.error);
-      const percent =
-        chunk.total && chunk.total > 0 && typeof chunk.completed === 'number'
-          ? Math.min(100, Math.round((chunk.completed / chunk.total) * 100))
-          : undefined;
-      onProgress({
-        status: chunk.status ?? 'pulling',
-        completed: chunk.completed,
-        total: chunk.total,
-        percent,
-      });
-    }
+  // The stream ends with {"status":"success"}; anything else means it was cut off.
+  if (lastStatus !== 'success') {
+    throw new Error(`Pull of ${modelName} ended unexpectedly (last status: ${lastStatus || 'none'}).`);
   }
 }
