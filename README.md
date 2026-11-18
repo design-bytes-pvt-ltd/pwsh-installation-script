@@ -82,7 +82,7 @@ npm start        # build and open the app
 npm test         # unit + parity tests
 npm run dist     # build installers (nsis / dmg / AppImage) into app/release
 ```
-Logs are written to the OS log folder (for example `~/Library/Logs/docker-ollama-installer` on macOS). The summary screen links to the log file.
+The summary screen links to the log file (see [Logs](#logs)) and has a **Copy error report** button when something failed.
 
 ## Requirements
 - **Windows:** Windows PowerShell 5.1 (built in) or PowerShell 7+. Ollama and models install as you. For the Docker step only, the script restarts itself as Administrator (one UAC prompt) and prints the combined summary in your original window.
@@ -108,6 +108,7 @@ pwsh ./install.ps1
 | `-SkipModels` | Don't pull models |
 | `-SkipDocker` | Don't install Docker |
 | `-DockerEngine` | Linux only: install Docker Engine instead of Docker Desktop |
+| `-LogPath <path>` | Where to write the log file. Default: see [Logs](#logs) |
 | `-WhatIf` | Dry run: print what would happen without changing anything |
 
 Examples:
@@ -119,6 +120,42 @@ pwsh ./install.ps1 -WhatIf
 ```
 
 At the end the script prints a summary and any follow-up steps, such as a reboot after enabling WSL2 or logging out and back in for docker group membership. It exits with code `1` if any step failed.
+
+## Logs
+The desktop app and the CLI write the same log format to the same folder. Only the 10 newest logs are kept.
+
+| OS | Folder |
+|---|---|
+| Windows | `%APPDATA%\Docker + Ollama Installer\logs` |
+| macOS | `~/Library/Logs/Docker + Ollama Installer` |
+| Linux | `~/.config/Docker + Ollama Installer/logs` |
+
+The files are named `install-app-<time>.log` (desktop app), `install-cli-<time>.log` (CLI) and `crash-<time>.log` (unexpected app errors outside an install). Each log has:
+
+1. **A header:** app or PowerShell version, OS, user, admin rights, and the chosen options.
+2. **A timeline:** one line per event (`time  LEVEL  step  message`). `OUT` lines are command output, and `$ cmd` lines are commands run inside root scripts.
+3. **A summary:** each step's result and the next steps.
+4. **One FAILURE REPORT per error,** for example:
+
+```
+================================================================================
+ FAILURE REPORT 1 of 1: Docker
+--------------------------------------------------------------------------------
+ What failed   Command failed (exit code 100)
+ Command       apt-get install -y /tmp/docker-ollama-ab12/docker-desktop-amd64.deb
+ Exit code     100
+ Elevated      yes (pkexec)
+ Hint          Another package manager (apt or Software Updater) is running. Wait for it to finish, then retry.
+ Last output (3 lines)
+   | $ apt-get install -y /tmp/docker-ollama-ab12/docker-desktop-amd64.deb
+   | E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4123 (apt)
+   | E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?
+================================================================================
+```
+
+Passwords, tokens and `user:pass@` URLs are masked before anything is written. Writing the log never stops an install: if the file can't be written, you get one warning and the install carries on.
+
+The report layout, hint table and masking rules are a shared contract, like the model rules. [`tests/fixtures/error-report.parity.json`](tests/fixtures/error-report.parity.json) is checked by both test suites, so update `app/src/main/core/errors.ts`, `install.ps1` and the fixture together.
 
 ## Why Ollama is installed natively (not in Docker)
 The native install uses the GPU on every OS: Metal on macOS, CUDA or ROCm on Windows and Linux. Docker Desktop on macOS can't pass the GPU through to containers. A native install also lets the script pull models right away instead of waiting for Docker to start, which often needs a reboot or a fresh login after installation.

@@ -16,6 +16,7 @@ import {
   quoteSh,
   removeDirSafe,
 } from './platform';
+import { toErrorReport } from './errors';
 import { DockerKind, InstallEvent, TargetOS } from './types';
 
 const NOTE_MARKER = '@@NOTE ';
@@ -125,8 +126,8 @@ export async function installDocker(options: {
 }): Promise<string> {
   const targetOS = getTargetOS();
   const existing = await detectDocker(targetOS);
-  const log = (level: 'info' | 'warn', message: string) =>
-    options.emit({ type: 'log', level, message, timestamp: new Date().toISOString() });
+  const log = (level: 'info' | 'warn', message: string, output = false) =>
+    options.emit({ type: 'log', level, message, timestamp: new Date().toISOString(), output });
   if (existing !== 'none') {
     log('info', `Docker already installed (${existing})`);
     return 'already present';
@@ -141,7 +142,7 @@ export async function installDocker(options: {
   const onOutput = (line: string) => {
     const at = line.indexOf(NOTE_MARKER);
     if (at >= 0) addNote(line.slice(at + NOTE_MARKER.length).trim());
-    else log('info', line);
+    else log('info', line, true);
   };
   const exec = { signal: options.signal, onOutput };
 
@@ -256,7 +257,13 @@ export async function installDocker(options: {
     return 'installed (Desktop)';
   } catch (err) {
     if (options.signal?.aborted) throw err;
-    log('warn', `Docker Desktop install failed (${(err as Error).message}); falling back to Docker Engine.`);
+    const r = toErrorReport(err, 'Docker');
+    log(
+      'warn',
+      ['Docker Desktop install failed; falling back to Docker Engine.', `What failed: ${r.summary}`, r.command && `Command: ${r.command}`, r.hint && `Hint: ${r.hint}`]
+        .filter(Boolean)
+        .join('\n')
+    );
     await installEngine();
     return 'installed (Engine fallback)';
   }

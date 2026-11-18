@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { CommandError, ElevationKind } from './errors';
 import { Arch, TargetOS } from './types';
 
 export function getTargetOS(platform: NodeJS.Platform = process.platform): TargetOS {
@@ -55,14 +56,26 @@ export class LineSplitter {
   }
 
   private emitLine(raw: string): void {
-    const frames = raw.replace(/\r$/, '').split('\r');
-    const visible = frames[frames.length - 1].replace(ANSI_PATTERN, '').replace(/\uFEFF/g, '');
+    // Spinners redraw with \r or ESC[<n>G (cursor to column); both start a new frame.
+    const frames = raw
+      .replace(/\x1b\[\d*G/g, '\r')
+      .split('\r')
+      .map((f) => f.replace(ANSI_PATTERN, '').replace(/\uFEFF/g, ''));
+    const visible = [...frames].reverse().find((f) => f.trim() !== '') ?? '';
     // Spinners erase characters with backspace; apply them instead of just dropping them.
     let line = '';
     for (const ch of visible) line = ch === '\b' ? line.slice(0, -1) : line + ch;
     line = line.trimEnd();
     if (line.trim()) this.emit(line);
   }
+}
+
+/** Lines of output kept for failure reports. */
+const TAIL_LINES = 40;
+
+function pushTail(tail: string[], line: string): void {
+  tail.push(line);
+  if (tail.length > TAIL_LINES) tail.shift();
 }
 
 function appendCapped(acc: string, text: string): string {
@@ -82,8 +95,13 @@ export async function execCommand(command: string, args: string[] = [], options:
 
     let stdout = '';
     let stderr = '';
-    const outLines = new LineSplitter((l) => options.onOutput?.(l));
-    const errLines = new LineSplitter((l) => options.onOutput?.(l));
+    const tail: string[] = [];
+    const onLine = (l: string) => {
+      pushTail(tail, l);
+      options.onOutput?.(l);
+    };
+    const outLines = new LineSplitter(onLine);
+    const errLines = new LineSplitter(onLine);
 
     child.stdout?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
@@ -102,7 +120,7 @@ export async function execCommand(command: string, args: string[] = [], options:
       errLines.flush();
       const exitCode = code ?? 1;
       if (!allowed.includes(exitCode)) {
-        reject(new Error(`Command failed (exit code ${exitCode}): ${command} ${args.join(' ')}\n${stderr.trim()}`.trim()));
+        reject(new CommandError({ command: [command, ...args].join(' '), exitCode, outputTail: tail }));
         return;
       }
       resolve({ exitCode, stdout, stderr });
@@ -224,7 +242,10 @@ export function tailFile(filePath: string, onLine?: (line: string) => void, inte
     }
   };
   const timer = setInterval(readNew, intervalMs);
+  let stopped = false;
   return () => {
+    if (stopped) return;
+    stopped = true;
     clearInterval(timer);
     readNew();
     lines.flush();
@@ -236,12 +257,87 @@ function isRoot(): boolean {
 }
 
 function friendlyElevationError(err: unknown): Error {
-  const msg = (err as Error).message ?? String(err);
-  if (/User canceled|\(-128\)|canceled by the user|Request dismissed|Not authorized|exit code 126/i.test(msg)) {
+  const output = err instanceof CommandError ? err.outputTail.join('\n') : '';
+  const text = `${(err as Error)?.message ?? String(err)}\n${output}`;
+  if (/User canceled|\(-128\)|cancell?ed by the user|Request dismissed|Not authorized|exit code 126|no password was provided|incorrect password attempts/i.test(text)) {
     return new Error('The administrator password prompt was cancelled or denied.');
   }
   return err as Error;
 }
+
+/**
+ * Reads the marker lines that elevated scripts print, so a failure names the inner command
+ * instead of "sh step.sh" or "powershell.exe":
+ * - sh scripts run with `set -x` and PS4='@@CMD ', and an EXIT trap prints `@@ERROR-EXIT <code>`.
+ * - The elevated PowerShell catch prints `@@ERROR`, `@@ERROR-CMD`, `@@ERROR-EXIT`, `@@ERROR-AT`, `@@ERROR-STACK`.
+ * Traced commands are passed on as "$ <command>"; other markers are consumed.
+ */
+export class ScriptMarkers {
+  lastCommand?: string;
+  failedCommand?: string;
+  exitCode?: number;
+  message?: string;
+  where?: string;
+  readonly stack: string[] = [];
+  readonly tail: string[] = [];
+
+  constructor(private readonly forward?: (line: string) => void) {}
+
+  push = (raw: string): void => {
+    let line = raw;
+    let m: RegExpExecArray | null;
+    if ((m = /^@+CMD (.*)$/.exec(raw))) {
+      this.lastCommand = m[1];
+      // echo traces would repeat @@NOTE markers and add nothing to the log.
+      if (/^echo\b/.test(m[1])) return;
+      line = `$ ${m[1]}`;
+    } else if ((m = /^@@ERROR-EXIT (-?\d+)/.exec(raw))) {
+      this.exitCode = Number(m[1]);
+      return;
+    } else if ((m = /^@@ERROR-CMD (.*)$/.exec(raw))) {
+      this.failedCommand = m[1];
+      return;
+    } else if ((m = /^@@ERROR-AT (.*)$/.exec(raw))) {
+      this.where = m[1];
+      return;
+    } else if ((m = /^@@ERROR-STACK (.*)$/.exec(raw))) {
+      this.stack.push(m[1]);
+      return;
+    } else if ((m = /^@@ERROR (.*)$/.exec(raw))) {
+      this.message = m[1];
+      return;
+    }
+    pushTail(this.tail, line);
+    this.forward?.(line);
+  };
+
+  /** Rebuilds a failed run's error with what the markers revealed. */
+  toError(err: unknown, elevated: ElevationKind): Error {
+    const friendly = friendlyElevationError(err);
+    if (friendly !== err || !(err instanceof CommandError)) return friendly;
+    const command = this.failedCommand ?? (this.exitCode !== undefined ? this.lastCommand : undefined);
+    const isCommandFailure = command !== undefined;
+    return new CommandError({
+      command,
+      exitCode: isCommandFailure ? (this.exitCode ?? err.exitCode) : undefined,
+      outputTail: this.tail.length > 0 ? this.tail : err.outputTail,
+      elevated,
+      where: this.where,
+      details: this.stack.length > 0 ? ['PowerShell stack:', ...this.stack.map((s) => `  ${s}`)] : [],
+      message: isCommandFailure ? undefined : (this.message ?? `The elevated script failed (exit code ${err.exitCode})`),
+    });
+  }
+}
+
+/** Preamble for root scripts: trace commands for failure reports and report the failing exit code. */
+export const SH_PREAMBLE = [
+  '#!/bin/sh',
+  'set -e',
+  'exec 2>&1',
+  "PS4='@@CMD '",
+  `trap '{ __rc=$?; set +x; } 2>/dev/null; if [ "$__rc" -ne 0 ]; then echo "@@ERROR-EXIT $__rc"; fi' EXIT`,
+  'set -x',
+].join('\n');
 
 async function createLinuxAskpass(dir: string): Promise<string | null> {
   const prompt = 'Docker + Ollama Installer needs your password to install system packages.';
@@ -270,22 +366,31 @@ export async function execPrivilegedScript(script: string, options: ExecOptions 
 
   const dir = createTempDir('docker-ollama-root-');
   const scriptPath = path.join(dir, 'step.sh');
-  fs.writeFileSync(scriptPath, `#!/bin/sh\nset -e\n${script.replace(/\r\n/g, '\n')}\n`, { mode: 0o700 });
+  fs.writeFileSync(scriptPath, `${SH_PREAMBLE}\n${script.replace(/\r\n/g, '\n')}\n`, { mode: 0o700 });
+  const markers = new ScriptMarkers(options.onOutput);
+  const run = async (elevated: ElevationKind, command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<ExecResult> => {
+    try {
+      return await execCommand(command, args, { ...options, env: env ?? options.env, onOutput: markers.push });
+    } catch (err) {
+      throw markers.toError(err, elevated);
+    }
+  };
   try {
-    if (isRoot()) return await execCommand('/bin/sh', [scriptPath], options);
+    if (isRoot()) return await run('root', '/bin/sh', [scriptPath]);
 
     if (targetOS === 'macos') {
       const logPath = path.join(dir, 'step.log');
       fs.writeFileSync(logPath, '');
       const shell = `/bin/sh ${quoteSh(scriptPath)} >> ${quoteSh(logPath)} 2>&1`;
-      const stopTail = tailFile(logPath, options.onOutput);
+      const stopTail = tailFile(logPath, markers.push);
       try {
         return await execCommand('osascript', ['-e', `do shell script ${quoteAppleScript(shell)} with administrator privileges`], {
           ...options,
           onOutput: undefined,
         });
       } catch (err) {
-        throw friendlyElevationError(err);
+        stopTail();
+        throw markers.toError(err, 'osascript');
       } finally {
         stopTail();
       }
@@ -293,17 +398,10 @@ export async function execPrivilegedScript(script: string, options: ExecOptions 
 
     const hasGui = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
     const pkexec = hasGui ? await commandExists('pkexec', 'linux') : null;
-    try {
-      if (pkexec) return await execCommand(pkexec, ['/bin/sh', scriptPath], options);
-      const askpass = await createLinuxAskpass(dir);
-      if (askpass) {
-        return await execCommand('sudo', ['-A', '/bin/sh', scriptPath], {
-          ...options,
-          env: { ...(options.env ?? process.env), SUDO_ASKPASS: askpass },
-        });
-      }
-    } catch (err) {
-      throw friendlyElevationError(err);
+    if (pkexec) return await run('pkexec', pkexec, ['/bin/sh', scriptPath]);
+    const askpass = await createLinuxAskpass(dir);
+    if (askpass) {
+      return await run('sudo-askpass', 'sudo', ['-A', '/bin/sh', scriptPath], { ...(options.env ?? process.env), SUDO_ASKPASS: askpass });
     }
     throw new Error(
       'Administrator rights are needed, but no graphical password prompt is available. ' +
@@ -332,15 +430,31 @@ export async function execElevatedPowerShell(body: string, options: ExecOptions 
     "$env:WSL_UTF8 = '1'",
     '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12',
     `$log = ${quotePs(logPath)}`,
+    '$script:FailedCmd = $null',
+    '$script:FailedExit = $null',
     'function Invoke-Checked([string]$File, [string[]]$Arguments = @(), [int[]]$Allowed = @(0)) {',
     '  & $File @Arguments',
-    '  if ($Allowed -notcontains $LASTEXITCODE) { throw "Command failed (exit code $LASTEXITCODE): $File $($Arguments -join \' \')" }',
+    '  if ($Allowed -notcontains $LASTEXITCODE) {',
+    "    $script:FailedCmd = (@($File) + $Arguments) -join ' '",
+    '    $script:FailedExit = $LASTEXITCODE',
+    '    throw "Command failed (exit code $LASTEXITCODE): $script:FailedCmd"',
+    '  }',
     '}',
     'try {',
     `  & {\n${body}\n} *>&1 | ForEach-Object { "$_" } | Out-File -FilePath $log -Append -Encoding utf8`,
     '  exit 0',
     '} catch {',
-    '  "ERROR: $($_.Exception.Message)" | Out-File -FilePath $log -Append -Encoding utf8',
+    '  $e = $_',
+    '  $lines = @("@@ERROR $($e.Exception.Message -replace \'\\r?\\n\', \' \')")',
+    // Only when this error came from Invoke-Checked (an earlier, handled failure may have set FailedCmd).
+    '  if ($script:FailedCmd -and $e.Exception.Message -eq "Command failed (exit code $script:FailedExit): $script:FailedCmd") {',
+    '    $lines += "@@ERROR-CMD $script:FailedCmd"; $lines += "@@ERROR-EXIT $script:FailedExit"',
+    '  }',
+    '  if ($e.InvocationInfo -and $e.InvocationInfo.ScriptLineNumber) {',
+    '    $lines += "@@ERROR-AT elevated script line $($e.InvocationInfo.ScriptLineNumber): $($e.InvocationInfo.Line.Trim())"',
+    '  }',
+    '  foreach ($f in ("$($e.ScriptStackTrace)" -split "`r?`n")) { if ($f.Trim()) { $lines += "@@ERROR-STACK $($f.Trim())" } }',
+    '  $lines | Out-File -FilePath $log -Append -Encoding utf8',
     '  exit 1',
     '}',
   ].join('\r\n');
@@ -349,14 +463,16 @@ export async function execElevatedPowerShell(body: string, options: ExecOptions 
   const launcher =
     `$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru ` +
     `-ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ${quotePs(`"${scriptPath}"`)}); exit $p.ExitCode`;
-  const stopTail = tailFile(logPath, options.onOutput);
+  const markers = new ScriptMarkers(options.onOutput);
+  const stopTail = tailFile(logPath, markers.push);
   try {
     return await execCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', launcher], {
       ...options,
       onOutput: undefined,
     });
   } catch (err) {
-    throw friendlyElevationError(err);
+    stopTail(); // read the last lines (the error markers) before building the error
+    throw markers.toError(err, 'uac');
   } finally {
     stopTail();
     removeDirSafe(dir);

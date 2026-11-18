@@ -1,0 +1,5 @@
+{
+  // Editors only discover files named tsconfig.json. Same settings as tsconfig.renderer.json
+  // (DOM types, no Node), so renderer files are not checked with the main-process config.
+  "extends": "../../tsconfig.renderer.json"
+}

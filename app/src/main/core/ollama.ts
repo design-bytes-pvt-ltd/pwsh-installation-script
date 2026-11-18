@@ -116,7 +116,7 @@ export async function installOllama(options: {
   }
 
   const onOutput = (line: string) =>
-    options.emit({ type: 'log', level: 'info', message: line, timestamp: new Date().toISOString() });
+    options.emit({ type: 'log', level: 'info', message: line, timestamp: new Date().toISOString(), output: true });
 
   if (targetOS === 'windows') {
     const winget = await commandExists('winget', targetOS);

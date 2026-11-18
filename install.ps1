@@ -35,6 +35,13 @@
 .PARAMETER DockerEngine
     Linux only: install Docker Engine instead of Docker Desktop.
 
+.PARAMETER LogPath
+    Where to write the log file. Default: install-cli-<timestamp>.log in the same folder the
+    desktop app uses (Windows: %APPDATA%\Docker + Ollama Installer\logs, macOS:
+    ~/Library/Logs/Docker + Ollama Installer, Linux: ~/.config/Docker + Ollama Installer/logs).
+    When a step fails, the end of the log has a FAILURE REPORT with the failing command, its
+    exit code, the last lines of output, where it failed and a hint.
+
 .EXAMPLE
     ./install.ps1
 
@@ -52,6 +59,7 @@ param(
     [switch]$SkipModels,
     [switch]$SkipDocker,
     [switch]$DockerEngine,
+    [string]$LogPath,
     [Parameter(DontShow)][string]$InvokingUser,
     [Parameter(DontShow)][string]$InvokingProfile,
     [Parameter(DontShow)][string]$ResultFile
@@ -77,14 +85,18 @@ $Models = @($Models | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Tri
 # --------------------------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------------------------
-function Write-Step([string]$Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
-function Write-Ok([string]$Message)   { Write-Host "    [ok] $Message" -ForegroundColor Green }
-function Write-Info([string]$Message) { Write-Host "    $Message" }
-function Write-Warn([string]$Message) { Write-Host "    [warn] $Message" -ForegroundColor Yellow }
+# Console output; everything is also written to the log file (see Write-InstallLog).
+function Write-Step([string]$Message) {
+    Write-Host "`n==> $Message" -ForegroundColor Cyan
+    if ($Message -ne $script:LogStep -and $Message -ne 'Summary') { Write-InstallLog 'INFO' $Message }
+}
+function Write-Ok([string]$Message)   { Write-Host "    [ok] $Message" -ForegroundColor Green; Write-InstallLog 'INFO' $Message }
+function Write-Info([string]$Message) { Write-Host "    $Message"; Write-InstallLog 'INFO' $Message }
+function Write-Warn([string]$Message) { Write-Host "    [warn] $Message" -ForegroundColor Yellow; Write-InstallLog 'WARN' $Message }
 
 function Add-Note([string]$Text) {
     # Follow-up steps for the summary. Dry runs change nothing, so they get no notes.
-    if (-not $WhatIfPreference) { $script:Notes.Add($Text) }
+    if (-not $WhatIfPreference) { $script:Notes.Add($Text); Write-InstallLog 'NOTE' $Text }
 }
 
 function Test-Command([string]$Name) {
@@ -93,6 +105,378 @@ function Test-Command([string]$Name) {
 
 function Confirm-Action([string]$Target, [string]$Action) {
     return $script:Ctx.ShouldProcess($Target, $Action)
+}
+
+# --------------------------------------------------------------------------------------------
+# Log file and failure reports
+# The layout, hint table and redaction rules mirror the desktop app (app/src/main/core/errors.ts).
+# tests/fixtures/error-report.parity.json is checked by both test suites: change them together.
+# --------------------------------------------------------------------------------------------
+$script:LogFile     = $null
+$script:LogStep     = ''
+$script:LogTag      = ''      # '[elevated] ' in the elevated Docker process
+$script:LogWarned   = $false
+$script:LogStarted  = Get-Date
+$script:Failures    = New-Object System.Collections.Generic.List[object]
+$script:LogRule     = '=' * 80
+$script:LogThinRule = '-' * 80
+$script:Utf8NoBom   = New-Object System.Text.UTF8Encoding $false
+$script:ReportOutputLines = 20
+$script:LogsToKeep  = 10
+
+$script:ElevationLabels = @{
+    'uac'          = 'yes (Windows UAC prompt)'
+    'osascript'    = 'yes (macOS administrator prompt)'
+    'pkexec'       = 'yes (pkexec)'
+    'sudo-askpass' = 'yes (sudo with a password dialog)'
+    'sudo'         = 'yes (sudo)'
+    'root'         = 'yes (already running as root)'
+}
+
+# First match wins. Patterns are case-insensitive and shared with errors.ts.
+$script:ErrorHints = @(
+    @{ Id = 'elevation-cancelled'; ExitCodes = @(); Pattern = 'password prompt was cancelled|User canceled|\(-128\)|Request dismissed|Not authorized|cancell?ed by the user|no password was provided|a password is required|incorrect password attempts'
+       Text = 'The administrator password prompt was cancelled or denied. Run the installer again and approve the prompt.' },
+    @{ Id = 'ollama-unreachable'; ExitCodes = @(); Pattern = 'Ollama server did not become reachable|Ollama is not running|(127\.0\.0\.1|localhost):11434'
+       Text = 'The Ollama server is not running. Start the Ollama app (or run ''ollama serve'') and try again.' },
+    @{ Id = 'model-not-found'; ExitCodes = @(); Pattern = 'pull model manifest|file does not exist|manifest unknown'
+       Text = 'Ollama could not find this model. Check the exact name and tag at https://ollama.com/library.' },
+    @{ Id = 'signature-invalid'; ExitCodes = @(); Pattern = 'signature check failed|signature is missing or invalid|code object is not signed|a sealed resource is missing|invalid signature'
+       Text = 'The downloaded installer failed its signature check, so it was not run. Retry on a trusted network, or download it from the vendor site.' },
+    @{ Id = 'wsl-reboot'; ExitCodes = @(3010); Pattern = 'reboot is required|restart is required|restart your computer'
+       Text = 'Windows needs a restart to finish this install (WSL2). Reboot, then run the installer again.' },
+    @{ Id = 'dpkg-lock'; ExitCodes = @(); Pattern = 'Could not get lock|dpkg frontend lock|Unable to acquire the dpkg'
+       Text = 'Another package manager (apt or Software Updater) is running. Wait for it to finish, then retry.' },
+    @{ Id = 'disk-full'; ExitCodes = @(); Pattern = 'ENOSPC|No space left on device|not enough (disk )?space|disk is full'
+       Text = 'The disk is full. Free some space (each model needs several GB) and retry.' },
+    @{ Id = 'winget-missing'; ExitCodes = @(); Pattern = 'winget(\.exe)?.{0,40}(is not recognized|not found|ENOENT)'
+       Text = 'winget (App Installer) is missing or broken. Install ''App Installer'' from the Microsoft Store and retry.' },
+    @{ Id = 'needs-admin'; ExitCodes = @(740); Pattern = 'requires elevation|0x80070005|Access is denied|Permission denied|EACCES|EPERM|must be run as root|are you root'
+       Text = 'This step needs administrator rights. Approve the administrator prompt, or run the installer from an administrator account.' },
+    @{ Id = 'network'; ExitCodes = @(); Pattern = 'ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|getaddrinfo|Could not resolve host|Network is unreachable|Failed to download|timed out|unable to connect|certificate verify failed|unable to get local issuer certificate'
+       Text = 'A network request failed. Check your internet connection, proxy or firewall, then retry.' },
+    @{ Id = 'command-not-found'; ExitCodes = @(127); Pattern = 'ENOENT|command not found|is not recognized as|not found in PATH|No such file or directory'
+       Text = 'A required program or file was not found. Make sure it is installed and on PATH, then retry.' }
+)
+
+# Root scripts trace each command (PS4='@@CMD ') and report the failing exit code, so a failure
+# names the inner command instead of 'sh step.sh'. Same preamble as the desktop app.
+$script:ShPreamble = @'
+set -e
+exec 2>&1
+PS4='@@CMD '
+trap '{ __rc=$?; set +x; } 2>/dev/null; if [ "$__rc" -ne 0 ]; then echo "@@ERROR-EXIT $__rc"; fi' EXIT
+set -x
+'@
+
+function Protect-LogText([string]$Text) {
+    # Masks credentials that commands sometimes echo (user:pass in URLs, token=..., auth headers).
+    $t = $Text -replace '(https?://)[^/\s:@]+:[^/\s@]+@', '$1***:***@'
+    $t = $t -replace '((?:password|passwd|token|secret|api[_-]?key)\s*[=:]\s*)[^\s&"'']+', '$1***'
+    return ($t -replace '(Authorization:\s*(?:Bearer\s+|Basic\s+)?)[^\s"'']+', '$1***')
+}
+
+function Get-CleanLines($Lines) {
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @($Lines)) {
+        if ($null -eq $l) { continue }
+        $t = "$l".TrimEnd()
+        if ($t.Trim() -ne '') { $out.Add($t) }
+    }
+    return $out.ToArray()   # callers wrap the result in @() so one line is still an array
+}
+
+function Get-ErrorHint([string]$Text, $ExitCode) {
+    foreach ($h in $script:ErrorHints) {
+        if ($null -ne $ExitCode -and @($h.ExitCodes) -contains [int]$ExitCode) { return $h }
+        if ($h.Pattern -and $Text -match $h.Pattern) { return $h }
+    }
+    return $null
+}
+
+function New-ErrorReport {
+    # Builds a failure report from plain fields (same rules as createErrorReport in errors.ts).
+    param([string]$Step, [string]$Message, [string]$Command, $ExitCode, [string]$Elevated, [string]$Where, $Output, $Details)
+    $msgLines = @(Get-CleanLines ("$Message" -split '\r?\n'))
+    $summary = 'Unknown error'
+    if ($msgLines.Count -gt 0 -and $msgLines[0].Trim()) { $summary = $msgLines[0].Trim() }
+    $det = @($msgLines | Select-Object -Skip 1) + @(Get-CleanLines $Details)
+    $all = @(Get-CleanLines $Output)
+    $cmd = ($Command -replace '\s+', ' ').Trim()
+    $code = $null
+    if ($null -ne $ExitCode -and "$ExitCode" -ne '') { $code = [int]$ExitCode }
+    $hint = Get-ErrorHint -Text ((@($summary, $cmd) + $det + $all) -join "`n") -ExitCode $code
+    return [pscustomobject][ordered]@{
+        Step        = $Step
+        Summary     = $summary
+        Command     = $(if ($cmd) { $cmd } else { $null })
+        ExitCode    = $code
+        Elevated    = $(if ($Elevated) { $Elevated } else { $null })
+        Where       = $(if ($Where.Trim()) { $Where.Trim() } else { $null })
+        HintId      = $(if ($hint) { $hint.Id } else { $null })
+        Hint        = $(if ($hint) { $hint.Text } else { $null })
+        Output      = @($all | Select-Object -Last $script:ReportOutputLines)
+        OutputTotal = $all.Count
+        Details     = @($det)
+    }
+}
+
+function Get-ErrorWhere($Frames, $InvocationInfo) {
+    # "install.ps1 line 998 (Install-DockerLinux)" for the first frame outside the command helpers.
+    foreach ($f in @($Frames)) {
+        if ($f -match '^at (.+?), (.+): line (\d+)$') {
+            if (@('Invoke-Native', 'Invoke-Sudo', 'Invoke-SudoScript', 'Invoke-Download') -contains $Matches[1]) { continue }
+            $file = Split-Path -Leaf $Matches[2]
+            if ($Matches[1] -eq '<ScriptBlock>') { return "$file line $($Matches[3])" }
+            return "$file line $($Matches[3]) ($($Matches[1]))"
+        }
+    }
+    if ($InvocationInfo -and $InvocationInfo.ScriptLineNumber) {
+        return "line $($InvocationInfo.ScriptLineNumber): $("$($InvocationInfo.Line)".Trim())"
+    }
+    return $null
+}
+
+function ConvertTo-ErrorReport {
+    # Turns a caught ErrorRecord into a failure report: message, the command context that
+    # Invoke-Native attached (command, exit code, output), inner exceptions and the script stack.
+    param([string]$Step, $ErrorRecord)
+    $ex = if ($ErrorRecord -is [System.Exception]) { $ErrorRecord } else { $ErrorRecord.Exception }
+    $data = $ex.Data
+    $details = New-Object System.Collections.Generic.List[string]
+    $inner = $ex.InnerException
+    for ($i = 0; $inner -and $i -lt 5; $i++) {
+        $details.Add("Caused by: $($inner.GetType().Name): $($inner.Message)")
+        $inner = $inner.InnerException
+    }
+    $frames = @()
+    if ($ErrorRecord -isnot [System.Exception]) {
+        $frames = @("$($ErrorRecord.ScriptStackTrace)" -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+    if ($frames.Count -gt 0) {
+        $details.Add('PowerShell stack:')
+        foreach ($f in ($frames | Select-Object -First 15)) { $details.Add("  $f") }
+    }
+    $where = $null
+    if ($ErrorRecord -isnot [System.Exception]) { $where = Get-ErrorWhere $frames $ErrorRecord.InvocationInfo }
+    $isCommand = $data -and $data.Contains('Command')
+    $elevated = $null
+    if ($data -and $data.Contains('Elevated')) { $elevated = $data['Elevated'] }
+    elseif ($ResultFile) { $elevated = 'uac' }
+    $params = @{ Step = $Step; Elevated = $elevated; Where = "$where"; Details = $details.ToArray() }
+    if ($isCommand) {
+        $params.Message  = "Command failed (exit code $($data['ExitCode']))"
+        $params.Command  = $data['Command']
+        $params.ExitCode = $data['ExitCode']
+        $params.Output   = $data['Output']
+    } else {
+        $params.Message = $ex.Message
+    }
+    return New-ErrorReport @params
+}
+
+function Format-LogField([string]$Name, [string]$Value) { return " $($Name.PadRight(13)) $Value" }
+
+function Format-FailureReport($Report, [int]$Index, [int]$Total) {
+    # The boxed FAILURE REPORT block, byte-identical to formatFailureReport in errors.ts.
+    $r = $Report
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add($script:LogRule)
+    $lines.Add(" FAILURE REPORT $Index of ${Total}: $($r.Step)")
+    $lines.Add($script:LogThinRule)
+    $lines.Add((Format-LogField 'What failed' $r.Summary))
+    if ($r.Command) { $lines.Add((Format-LogField 'Command' $r.Command)) }
+    if ($null -ne $r.ExitCode) { $lines.Add((Format-LogField 'Exit code' "$($r.ExitCode)")) }
+    if ($r.Elevated) {
+        $label = $script:ElevationLabels["$($r.Elevated)"]
+        if (-not $label) { $label = "yes ($($r.Elevated))" }
+        $lines.Add((Format-LogField 'Elevated' $label))
+    }
+    if ($r.Where) { $lines.Add((Format-LogField 'Where' $r.Where)) }
+    if ($r.Hint) { $lines.Add((Format-LogField 'Hint' $r.Hint)) }
+    $output = @(@($r.Output) | Where-Object { $null -ne $_ })
+    if ($output.Count -gt 0) {
+        $n = $output.Count
+        if ([int]$r.OutputTotal -gt $n) { $lines.Add(" Last output (last $n of $($r.OutputTotal) lines)") }
+        else { $lines.Add(" Last output ($n $(if ($n -eq 1) { 'line' } else { 'lines' }))") }
+        foreach ($l in $output) { $lines.Add("   | $l") }
+    }
+    $details = @(@($r.Details) | Where-Object { $null -ne $_ })
+    if ($details.Count -gt 0) {
+        $lines.Add(' Details')
+        foreach ($l in $details) { $lines.Add("   | $l") }
+    }
+    return (@($lines | ForEach-Object { Protect-LogText $_ }) -join "`n")
+}
+
+function Format-LogHeader($Fields) {
+    $lines = @(
+        $script:LogRule,
+        ' Docker + Ollama Installer log',
+        (Format-LogField 'Started' $Fields.Started),
+        (Format-LogField 'Source' $Fields.Source),
+        (Format-LogField 'System' $Fields.System),
+        (Format-LogField 'Options' $Fields.Options),
+        (Format-LogField 'Log file' $Fields.LogFile),
+        $script:LogRule
+    )
+    return (@($lines | ForEach-Object { Protect-LogText $_ }) -join "`n")
+}
+
+function Format-TimelineLine([string]$Time, [string]$Level, [string]$Step, [string]$Message) {
+    # Columns: time, level, step, message. Continuation lines are indented under the message.
+    $lines = @("$Message" -split '\r?\n' | ForEach-Object { $_.TrimEnd() })
+    $out = @("$Time  $($Level.PadRight(5))  $($Step.PadRight(8)) $($lines[0])")
+    foreach ($l in ($lines | Select-Object -Skip 1)) { if ($l.Trim()) { $out += "$(' ' * 30)| $l" } }
+    return (@($out | ForEach-Object { Protect-LogText $_ }) -join "`n")
+}
+
+function Format-Duration([double]$Ms) {
+    $total = [int][math]::Floor([math]::Max(0, $Ms) / 1000)
+    $m = [int][math]::Floor($total / 60)
+    $s = $total % 60
+    if ($m -gt 0) { return "${m}m${s}s" }
+    return "${s}s"
+}
+
+function Get-LogPairs($Map) {
+    # Key/value pairs from an ordered hashtable or a JSON object, in order.
+    if ($Map -is [System.Collections.IDictionary]) { foreach ($k in $Map.Keys) { [pscustomobject]@{ Key = "$k"; Value = "$($Map[$k])" } } }
+    elseif ($null -ne $Map) { foreach ($p in $Map.PSObject.Properties) { [pscustomobject]@{ Key = "$($p.Name)"; Value = "$($p.Value)" } } }
+}
+
+function Format-Summary($Results, $Notes, [int]$ExitCode, [double]$DurationMs, [bool]$Cancelled) {
+    $head = " SUMMARY   exit code $ExitCode   (duration $(Format-Duration $DurationMs))"
+    if ($Cancelled) { $head += '   cancelled' }
+    $lines = @($script:LogRule, $head)
+    foreach ($pair in @(Get-LogPairs $Results)) { $lines += "   $($pair.Key.PadRight(8)) $(($pair.Value -split '\r?\n')[0])" }
+    $noteList = @(@($Notes) | Where-Object { $_ })
+    if ($noteList.Count -gt 0) {
+        $lines += ' Next steps:'
+        foreach ($n in $noteList) { $lines += "   - $n" }
+    }
+    return (@($lines | ForEach-Object { Protect-LogText $_ }) -join "`n")
+}
+
+function Format-RunEnd($Results, $Notes, [int]$ExitCode, [double]$DurationMs, [bool]$Cancelled, $Reports) {
+    # foreach instead of @($Reports): PowerShell 7.6 throws "Argument types do not match" for
+    # @() around a List[object] of PSCustomObjects.
+    $reportList = New-Object System.Collections.Generic.List[object]
+    foreach ($r in $Reports) { if ($null -ne $r) { $reportList.Add($r) } }
+    $parts = @(Format-Summary $Results $Notes $ExitCode $DurationMs $Cancelled)
+    for ($i = 0; $i -lt $reportList.Count; $i++) { $parts += Format-FailureReport $reportList[$i] ($i + 1) $reportList.Count }
+    $parts += $script:LogRule
+    return ($parts -join "`n")
+}
+
+function Add-LogText([string]$Text) {
+    # Never throws: a broken log must not break the install.
+    if (-not $script:LogFile) { return }
+    try { [System.IO.File]::AppendAllText($script:LogFile, "$Text`n", $script:Utf8NoBom) }
+    catch {
+        if (-not $script:LogWarned) {
+            $script:LogWarned = $true
+            Write-Host "    [warn] Could not write the log file $($script:LogFile): $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+}
+
+function Write-InstallLog([string]$Level, [string]$Message, [string]$Step = $script:LogStep) {
+    if (-not $script:LogFile) { return }
+    try { Add-LogText (Format-TimelineLine (Get-Date).ToString('HH:mm:ss.fff') $Level $Step "$script:LogTag$Message") } catch { }
+}
+
+function Get-DefaultLogDir {
+    # Same folder as the desktop app (Electron's app.getPath('logs')), so all logs are in one place.
+    $name = 'Docker + Ollama Installer'
+    if ($script:OnWindows) {
+        $base = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $HOME 'AppData\Roaming' }
+        return (Join-Path (Join-Path $base $name) 'logs')
+    }
+    if ($script:OnMac) { return (Join-Path (Join-Path $HOME 'Library/Logs') $name) }
+    $config = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }
+    return (Join-Path (Join-Path $config $name) 'logs')
+}
+
+function Remove-OldLogs([string]$Dir, [int]$Keep = $script:LogsToKeep) {
+    try {
+        Get-ChildItem -LiteralPath $Dir -File -ErrorAction Stop |
+            Where-Object { $_.Name -match '^(install|crash)-.*\.log$' } |
+            Sort-Object LastWriteTime -Descending | Select-Object -Skip $Keep |
+            Remove-Item -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
+    } catch { }
+}
+
+function Get-LogSystem {
+    $name = 'unknown OS'
+    try {
+        if ($script:OnWindows) {
+            $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+            $name = "$($os.Caption) ($($os.Version))"
+        } elseif ($script:OnMac) {
+            $name = "macOS $("$(& sw_vers -productVersion)".Trim())"
+        } else {
+            $rel = Get-OsRelease
+            $name = if ($rel['PRETTY_NAME']) { $rel['PRETTY_NAME'] } else { "Linux $(& uname -r)" }
+        }
+    } catch { }
+    $arch = try { Get-Arch } catch { 'unknown' }
+    $admin = $false
+    try {
+        if ($script:OnWindows) {
+            $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+            $admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        } else { $admin = Test-IsRoot }
+    } catch { }
+    return "$name ($arch)   user: $([Environment]::UserName)   admin: $(if ($admin) { 'yes' } else { 'no' })"
+}
+
+function Get-LogOptions {
+    $yn = { param($b) if ($b) { 'yes' } else { 'no' } }
+    $modelText = if ($script:SkipModels) { 'none' }
+                 elseif ($script:ScriptBoundParameters.ContainsKey('Models')) { if ($Models.Count) { $Models -join ',' } else { 'none' } }
+                 else { 'ask' }
+    return "ollama=$(& $yn (-not $script:SkipOllama))  models=$modelText  docker=$(& $yn (-not $script:SkipDocker))  engine=$(& $yn $script:DockerEngine)  dry-run=$(& $yn $WhatIfPreference)"
+}
+
+function Initialize-Log {
+    try {
+        if ($LogPath) {
+            $script:LogFile = [System.IO.Path]::GetFullPath($LogPath)
+        } else {
+            $dir = Get-DefaultLogDir
+            [void][System.IO.Directory]::CreateDirectory($dir)
+            Remove-OldLogs $dir
+            $script:LogFile = Join-Path $dir ('install-cli-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        }
+        [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $script:LogFile))
+    } catch {
+        $script:LogFile = $null
+        Write-Warn "Could not create a log file: $($_.Exception.Message)"
+        return
+    }
+    if ($ResultFile) {
+        # Elevated Docker process: append to the parent's log.
+        $script:LogTag = '[elevated] '
+        Write-InstallLog 'INFO' "Elevated process started (PID $PID)"
+        return
+    }
+    Add-LogText (Format-LogHeader @{
+        Started = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
+        Source  = "install.ps1 (PowerShell $($PSVersionTable.PSVersion))"
+        System  = Get-LogSystem
+        Options = Get-LogOptions
+        LogFile = $script:LogFile
+    })
+}
+
+function Add-Failure([string]$Step, $ErrorRecord) {
+    # Records a failure: one ERROR line now, the full report at the end of the log.
+    try { $report = ConvertTo-ErrorReport -Step $Step -ErrorRecord $ErrorRecord }
+    catch { $report = New-ErrorReport -Step $Step -Message "$ErrorRecord" }
+    $script:Failures.Add($report)
+    $line = if ($report.Hint) { "$($report.Summary)`nHint: $($report.Hint)" } else { $report.Summary }
+    Write-InstallLog 'ERROR' $line ($Step -split ':')[0]
 }
 
 function Get-Arch {
@@ -117,7 +501,8 @@ function Test-IsRoot {
 }
 
 function Invoke-Native {
-    # Runs an external command and throws if it exits non-zero.
+    # Runs an external command, shows and logs its output, and throws if it exits non-zero. The
+    # exception carries the command, exit code and last output lines for the failure report.
     param(
         [Parameter(Mandatory)][string]$FilePath,
         [string[]]$ArgumentList = @(),
@@ -125,10 +510,46 @@ function Invoke-Native {
     )
     $display = (@($FilePath) + $ArgumentList) -join ' '
     if (-not (Confirm-Action $display 'Run')) { return }
-    # Out-Host keeps command output on screen instead of leaking into function return values.
-    & $FilePath @ArgumentList | Out-Host
-    if ($AllowedExitCodes -notcontains $LASTEXITCODE) {
-        throw "Command failed (exit code $LASTEXITCODE): $display"
+    Write-InstallLog 'INFO' "Running: $display"
+    $tail = New-Object System.Collections.Generic.List[string]
+    $trace = @{ Command = $null; ExitCode = $null }
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'   # 5.1 turns redirected native stderr into errors
+    try {
+        # Write-Host keeps command output on screen instead of leaking into function return values.
+        & $FilePath @ArgumentList 2>&1 | ForEach-Object {
+            $line = "$_"
+            if ($line -match '^@+CMD (.*)$') {          # traced command in a root script
+                $trace.Command = $Matches[1]
+                if ($Matches[1] -match '^echo\b') { return }
+                $line = "`$ $($Matches[1])"
+            } elseif ($line -match '^@@ERROR-EXIT (-?\d+)') {
+                $trace.ExitCode = [int]$Matches[1]
+                return
+            }
+            Write-Host $line
+            # Progress bars redraw with `r or ESC[<n>G (cursor to column): keep the final frame
+            # and drop colour codes.
+            $frames = ($line -replace '\x1b\[\d*G', "`r") -split "`r" | ForEach-Object { $_ -replace '\x1b\[[0-9;?]*[A-Za-z]', '' }
+            $clean = $frames | Where-Object { $_.Trim() } | Select-Object -Last 1
+            if ($clean -and $clean.Trim()) {
+                Write-InstallLog 'OUT' $clean
+                $tail.Add($clean.TrimEnd())
+                if ($tail.Count -gt 40) { $tail.RemoveAt(0) }
+            }
+        }
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $oldEap }
+    if ($AllowedExitCodes -notcontains $code) {
+        $ex = New-Object System.Exception ("Command failed (exit code $code): $display")
+        $failedCommand = $display
+        if ($null -ne $trace.ExitCode -and $trace.Command) { $failedCommand = $trace.Command; $code = $trace.ExitCode }
+        $ex.Data['Command']  = $failedCommand
+        $ex.Data['ExitCode'] = $code
+        $ex.Data['Output']   = $tail.ToArray()
+        if ($FilePath -eq 'sudo') { $ex.Data['Elevated'] = 'sudo' }
+        elseif (Test-IsRoot) { $ex.Data['Elevated'] = 'root' }
+        throw $ex
     }
 }
 
@@ -819,11 +1240,16 @@ function Invoke-ModelPull {
             if (-not $WhatIfPreference) { Write-Ok "Pulled $m" }
         } catch {
             Write-Warn "Failed to pull ${m}: $($_.Exception.Message)"
+            Add-Failure "Models: $m" $_
             $failed += $m
         }
     }
     if ($WhatIfPreference) { return 'would pull' }
-    if ($failed.Count -gt 0) { throw "Failed to pull: $($failed -join ', ')" }
+    if ($failed.Count -gt 0) {
+        $ex = New-Object System.Exception ("Failed to pull: $($failed -join ', ')")
+        $ex.Data['Reported'] = $true   # each model already has its own failure report
+        throw $ex
+    }
     return 'pulled'
 }
 
@@ -928,7 +1354,7 @@ function Invoke-SudoScript([string]$Script) {
     $tmp = New-TempDir
     try {
         $file = Join-Path $tmp 'step.sh'
-        [System.IO.File]::WriteAllText($file, ($Script -replace "`r`n", "`n"))
+        [System.IO.File]::WriteAllText($file, ("$script:ShPreamble`n$Script" -replace "`r`n", "`n"))
         Invoke-Sudo -FilePath 'sh' -ArgumentList @($file)
     } finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false }
 }
@@ -1043,11 +1469,13 @@ function Invoke-Main {
 
     $osName = if ($script:OnWindows) { 'Windows' } elseif ($script:OnMac) { 'macOS' } else { 'Linux' }
     Write-Host "Docker + Ollama installer  |  OS: $osName  |  Arch: $(Get-Arch)  |  PowerShell $($PSVersionTable.PSVersion)"
+    if ($script:LogFile -and -not $ResultFile) { Write-Host "Log: $($script:LogFile)" -ForegroundColor DarkGray }
 
     # Ask which models to pull before anything is installed, so the rest runs unattended.
     if (-not $script:SkipModels -and -not $script:ScriptBoundParameters.ContainsKey('Models')) {
         $script:Models = @(Select-Models)
         if ($script:Models.Count -eq 0) { $script:SkipModels = [switch]$true }
+        Write-InstallLog 'INFO' "Models selected: $(if ($script:Models.Count) { $script:Models -join ', ' } else { 'none' })"
     }
 
     $steps = @(
@@ -1070,23 +1498,33 @@ function Invoke-Main {
     }
 
     foreach ($step in $steps) {
-        if ($step.Skip) { $script:Results[$step.Name] = 'skipped'; continue }
+        $script:LogStep = $step.Name
+        if ($step.Skip) { $script:Results[$step.Name] = 'skipped'; Write-InstallLog 'STEP' 'skipped'; continue }
+        Write-InstallLog 'STEP' 'running'
         if ($elevateDocker -and $step.Name -eq 'Docker') {
             $script:Results['Docker'] = Invoke-ElevatedDockerStep
-            continue
+        } else {
+            try {
+                $out = & $step.Action
+                $script:Results[$step.Name] = "$(@($out)[-1])"
+            } catch {
+                Write-Warn "$($step.Name) failed: $($_.Exception.Message)"
+                $summary = $_.Exception.Message
+                if (-not $_.Exception.Data['Reported']) {
+                    Add-Failure $step.Name $_
+                    $summary = $script:Failures[$script:Failures.Count - 1].Summary
+                }
+                $script:Results[$step.Name] = "FAILED: $summary"
+            }
         }
-        try {
-            $out = & $step.Action
-            $script:Results[$step.Name] = "$(@($out)[-1])"
-        } catch {
-            Write-Warn "$($step.Name) failed: $($_.Exception.Message)"
-            $script:Results[$step.Name] = "FAILED: $($_.Exception.Message)"
-        }
+        $result = $script:Results[$step.Name]
+        if ($result -like 'FAILED*') { Write-InstallLog 'STEP' ('failed: ' + ($result -replace '^FAILED:\s*', '')) }
+        else { Write-InstallLog 'STEP' "done: $result" }
     }
 
     if ($ResultFile) {
         # Running elevated on behalf of a non-admin console: hand the results back to it.
-        @{ Results = $script:Results; Notes = @($script:Notes) } | ConvertTo-Json -Depth 4 |
+        @{ Results = $script:Results; Notes = @($script:Notes); Failures = $script:Failures.ToArray() } | ConvertTo-Json -Depth 6 |
             Set-Content -LiteralPath $ResultFile -Encoding UTF8 -WhatIf:$false
         $failedSteps = @($script:Results.Values | Where-Object { $_ -like 'FAILED*' })
         if ($failedSteps.Count -gt 0) { exit 1 }
@@ -1105,8 +1543,25 @@ function Invoke-Main {
     }
 
     $failedSteps = @($script:Results.Values | Where-Object { $_ -like 'FAILED*' })
-    if ($failedSteps.Count -gt 0) { exit 1 }
-    exit 0
+    $exitCode = if ($failedSteps.Count -gt 0) { 1 } else { 0 }
+    Write-FailureSummary
+    Add-LogText (Format-RunEnd $script:Results @($script:Notes | Select-Object -Unique) $exitCode `
+        ((Get-Date) - $script:LogStarted).TotalMilliseconds $false $script:Failures)
+    if ($script:LogFile) { Write-Host "`n    Full log: $($script:LogFile)" -ForegroundColor DarkGray }
+    exit $exitCode
+}
+
+function Write-FailureSummary {
+    # Short console version of the failure reports; the full ones are in the log file.
+    if ($script:Failures.Count -eq 0) { return }
+    Write-Host "`n    What went wrong:" -ForegroundColor Red
+    foreach ($f in $script:Failures) {
+        Write-Host "     - $($f.Step): $($f.Summary)" -ForegroundColor Red
+        if ($f.Command) { Write-Host "         Command: $(Protect-LogText $f.Command)" }
+        if ($f.Hint)    { Write-Host "         Hint: $($f.Hint)" -ForegroundColor Yellow }
+        $last = @(@($f.Output) | Where-Object { $_ } | Select-Object -Last 3)
+        foreach ($l in $last) { Write-Host "         | $(Protect-LogText $l)" -ForegroundColor DarkGray }
+    }
 }
 
 function Invoke-ElevatedDockerStep {
@@ -1122,18 +1577,24 @@ function Invoke-ElevatedDockerStep {
                  '-InvokingProfile', "`"$env:USERPROFILE`"",
                  '-ResultFile', "`"$resultPath`"")
     if ($script:DockerEngine) { $argList += '-DockerEngine' }
+    if ($script:LogFile) { $argList += @('-LogPath', "`"$($script:LogFile)`"") }   # child appends to this log
     try {
         $hostExe = (Get-Process -Id $PID).Path
         try {
             $p = Start-Process -FilePath $hostExe -ArgumentList $argList -Verb RunAs -Wait -PassThru
         } catch {
+            Add-Failure 'Docker' $_
             return "FAILED: could not start the elevated installer ($($_.Exception.Message))"
         }
         if (-not (Test-Path -LiteralPath $resultPath)) {
-            return "FAILED: the elevated installer exited with code $($p.ExitCode) without reporting a result"
+            $msg = "The elevated installer exited with code $($p.ExitCode) without reporting a result"
+            $script:Failures.Add((New-ErrorReport -Step 'Docker' -Message $msg -Elevated 'uac'))
+            Write-InstallLog 'ERROR' $msg
+            return "FAILED: $msg"
         }
         $report = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
         foreach ($n in @($report.Notes)) { if ($n) { $script:Notes.Add("$n") } }
+        foreach ($f in @($report.Failures)) { if ($f) { $script:Failures.Add($f) } }
         $docker = "$($report.Results.Docker)"
         if ($docker -like 'FAILED*') { Write-Warn "Docker $docker" } elseif ($docker) { Write-Ok $docker }
         if ($docker) { return $docker }
@@ -1142,5 +1603,23 @@ function Invoke-ElevatedDockerStep {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-Main
+    Initialize-Log
+    try {
+        Invoke-Main
+    } catch {
+        # Anything that escapes the steps (an unsupported OS, the model picker, a bug) still
+        # gets a full report in the log.
+        Add-Failure 'FATAL' $_
+        $fatal = $script:Failures[$script:Failures.Count - 1]
+        Write-Host "`nThe installer stopped: $($fatal.Summary)" -ForegroundColor Red
+        if ($fatal.Hint) { Write-Host "Hint: $($fatal.Hint)" -ForegroundColor Yellow }
+        if ($ResultFile) {
+            @{ Results = @{ Docker = "FAILED: $($fatal.Summary)" }; Notes = @($script:Notes); Failures = $script:Failures.ToArray() } |
+                ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ResultFile -Encoding UTF8 -WhatIf:$false
+        } else {
+            Add-LogText (Format-RunEnd $script:Results @($script:Notes) 1 ((Get-Date) - $script:LogStarted).TotalMilliseconds $false $script:Failures)
+            if ($script:LogFile) { Write-Host "Full log: $($script:LogFile)" -ForegroundColor DarkGray }
+        }
+        exit 1
+    }
 }

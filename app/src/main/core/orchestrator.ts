@@ -1,8 +1,9 @@
-import fs from 'node:fs';
 import { detectDocker, installDocker } from './docker';
+import { ErrorReport, ReportedError, toErrorReport } from './errors';
 import { getModelBudget } from './hardware';
 import { buildModelRows, getInstalledModels, getOllamaBaseUrl, loadModelCatalog } from './models';
 import { getOllamaExe, installOllama, pullModelStream, waitForOllamaServer } from './ollama';
+import type { InstallLogger } from './logger';
 import { getArch, getTargetOS } from './platform';
 import { InstallEvent, InstallOptions, ProbeResult, StepName } from './types';
 
@@ -27,25 +28,11 @@ export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
   };
 }
 
-function formatForLog(event: InstallEvent): string | null {
-  switch (event.type) {
-    case 'log':
-      return `[${event.level.toUpperCase()}] ${event.message}`;
-    case 'step':
-      return `[STEP] ${event.step}: ${event.status}${event.detail ? ` (${event.detail})` : ''}`;
-    case 'note':
-      return `[NOTE] ${event.message}`;
-    case 'summary':
-      return `[SUMMARY] ${JSON.stringify(event.results)} exitCode=${event.exitCode}${event.cancelled ? ' (cancelled)' : ''}`;
-    default:
-      return null; // progress events are too chatty for the log file
-  }
-}
-
-/** Pulls each model, continuing past failures. Returns the names that failed. */
+/** Pulls each model, continuing past failures. Each failure gets its own report. Returns the names that failed. */
 async function pullModels(
   models: string[],
   emit: (event: InstallEvent) => void,
+  report: (r: ErrorReport) => void,
   signal?: AbortSignal
 ): Promise<string[]> {
   const exe = await getOllamaExe();
@@ -56,6 +43,7 @@ async function pullModels(
   const failed: string[] = [];
   for (const model of models) {
     if (signal?.aborted) break;
+    emit({ type: 'log', level: 'info', message: `Pulling ${model}`, timestamp: new Date().toISOString() });
     try {
       await pullModelStream(
         model,
@@ -66,7 +54,7 @@ async function pullModels(
       emit({ type: 'log', level: 'info', message: `Pulled ${model}`, timestamp: new Date().toISOString() });
     } catch (err) {
       if (signal?.aborted) break;
-      emit({ type: 'log', level: 'warn', message: `Failed to pull ${model}: ${(err as Error).message}`, timestamp: new Date().toISOString() });
+      report(toErrorReport(err, `Models: ${model}`));
       failed.push(model);
     }
   }
@@ -77,22 +65,23 @@ export async function runInstall(
   options: InstallOptions,
   emit: (event: InstallEvent) => void,
   signal?: AbortSignal,
-  logPath?: string
+  logger?: InstallLogger
 ): Promise<void> {
   const results: Record<string, string> = {};
   const notes: string[] = [];
+  const reports: ErrorReport[] = [];
 
   const forward = (event: InstallEvent) => {
     if (event.type === 'note') notes.push(event.message);
-    const line = logPath ? formatForLog(event) : null;
-    if (line) {
-      try {
-        fs.appendFileSync(logPath!, `[${new Date().toISOString()}] ${line}\n`);
-      } catch {
-        // Ignore log write failures
-      }
-    }
+    logger?.event(event);
     emit(event);
+  };
+
+  /** Records a failure: full report in the log file, a short line in the UI log. */
+  const report = (r: ErrorReport) => {
+    reports.push(r);
+    logger?.failure(r);
+    emit({ type: 'log', level: 'error', message: r.hint ? `${r.step}: ${r.summary} (${r.hint})` : `${r.step}: ${r.summary}`, timestamp: new Date().toISOString() });
   };
 
   /** Runs one step, turning errors into FAILED and an abort into "cancelled". */
@@ -119,7 +108,12 @@ export async function runInstall(
         forward({ type: 'step', step, status: 'cancelled' });
         return;
       }
-      const msg = (err as Error).message;
+      let msg = (err as Error)?.message ?? String(err);
+      if (!(err instanceof ReportedError)) {
+        const r = toErrorReport(err, step);
+        report(r);
+        msg = r.summary;
+      }
       results[step] = `FAILED: ${msg}`;
       forward({ type: 'step', step, status: 'failed', detail: msg });
     }
@@ -134,8 +128,8 @@ export async function runInstall(
       forward({ type: 'log', level: 'info', message: `[dry-run] Would pull: ${options.models.join(', ')}`, timestamp: new Date().toISOString() });
       return 'would pull';
     }
-    const failed = await pullModels(options.models, forward, signal);
-    if (failed.length > 0) throw new Error(`Failed to pull: ${failed.join(', ')}`);
+    const failed = await pullModels(options.models, forward, report, signal);
+    if (failed.length > 0) throw new ReportedError(`Failed to pull: ${failed.join(', ')}`);
     return 'pulled';
   });
 
@@ -151,6 +145,7 @@ export async function runInstall(
     notes: Array.from(new Set(notes)),
     exitCode: hasFailures || cancelled ? 1 : 0,
     cancelled,
-    logPath,
+    logPath: logger?.filePath,
+    failures: reports.map((r) => ({ step: r.step, summary: r.summary, hint: r.hint })),
   });
 }

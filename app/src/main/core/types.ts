@@ -51,11 +51,19 @@ export interface InstallOptions {
 }
 
 export type StepName = 'Ollama' | 'Models' | 'Docker';
+
+/** Short form of a failure report, for the summary screen. */
+export interface FailureSummary {
+  step: string;
+  summary: string;
+  hint?: string;
+}
 export type StepStatus = 'running' | 'done' | 'skipped' | 'failed' | 'cancelled';
 
 export type InstallEvent =
   | { type: 'step'; step: StepName; status: StepStatus; detail?: string }
   | { type: 'progress'; step: StepName; label: string; completed?: number; total?: number; percent?: number }
-  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string; timestamp: string }
+  /** `output: true` marks a line printed by an external command (logged as OUT). */
+  | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string; timestamp: string; output?: boolean }
   | { type: 'note'; message: string }
-  | { type: 'summary'; results: Record<string, string>; notes: string[]; exitCode: number; cancelled: boolean; logPath?: string };
+  | { type: 'summary'; results: Record<string, string>; notes: string[]; exitCode: number; cancelled: boolean; logPath?: string; failures?: FailureSummary[] };

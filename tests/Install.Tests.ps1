@@ -130,3 +130,144 @@ Describe 'Parity with the Electron app (tests/fixtures/model-rows.parity.json)' 
         ConvertFrom-RocmSmiJson $script:Fixture.gpuParsing.rocmSmi.output | Should -Be $script:Fixture.gpuParsing.rocmSmi.expectedGB
     }
 }
+
+Describe 'Failure log parity with the Electron app (tests/fixtures/error-report.parity.json)' {
+    BeforeDiscovery {
+        $fixture = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'tests/fixtures/error-report.parity.json') -Raw | ConvertFrom-Json
+        $script:ReportCases = @($fixture.reportCases | ForEach-Object { @{ Case = $_ } })
+    }
+
+    BeforeAll {
+        $script:Fixture = Get-Content (Join-Path $script:RepoRoot 'tests/fixtures/error-report.parity.json') -Raw | ConvertFrom-Json
+        function ConvertTo-ReportParams($Fields) {
+            $p = @{ Step = $Fields.step; Message = $Fields.message }
+            foreach ($k in 'command', 'exitCode', 'elevated', 'where', 'output', 'details') {
+                if ($null -ne $Fields.$k) { $p[$k.Substring(0, 1).ToUpper() + $k.Substring(1)] = $Fields.$k }
+            }
+            return $p
+        }
+    }
+
+    It 'uses the same hint table' {
+        $script:ErrorHints.Count | Should -Be @($script:Fixture.hints).Count
+        for ($i = 0; $i -lt $script:ErrorHints.Count; $i++) {
+            $h = $script:ErrorHints[$i]; $f = @($script:Fixture.hints)[$i]
+            $h.Id | Should -BeExactly $f.id
+            $h.Pattern | Should -BeExactly $f.pattern
+            $h.Text | Should -BeExactly $f.text
+            @($h.ExitCodes) | Should -Be @($f.exitCodes)
+        }
+    }
+
+    It 'writes the same report: <Case.label>' -ForEach $script:ReportCases {
+        $params = ConvertTo-ReportParams $Case.input
+        $report = New-ErrorReport @params
+        $report.HintId | Should -Be $Case.hintId
+        Format-FailureReport $report $Case.index $Case.total | Should -BeExactly $Case.expected
+    }
+
+    It 'redacts secrets the same way' {
+        foreach ($c in $script:Fixture.redactCases) { Protect-LogText $c.input | Should -BeExactly $c.expected }
+    }
+
+    It 'formats timeline lines the same way' {
+        foreach ($c in $script:Fixture.timelineCases) {
+            Format-TimelineLine $c.time $c.level $c.step $c.message | Should -BeExactly $c.expected
+        }
+    }
+
+    It 'formats durations the same way' {
+        foreach ($c in $script:Fixture.durationCases) { Format-Duration $c.ms | Should -BeExactly $c.expected }
+    }
+
+    It 'formats the summary, run end and header the same way' {
+        $s = $script:Fixture.summaryCase.input
+        Format-Summary $s.results $s.notes $s.exitCode $s.durationMs $s.cancelled | Should -BeExactly $script:Fixture.summaryCase.expected
+        $c = $script:Fixture.cancelledSummaryCase.input
+        Format-Summary $c.results $c.notes $c.exitCode $c.durationMs $c.cancelled | Should -BeExactly $script:Fixture.cancelledSummaryCase.expected
+        $e = $script:Fixture.runEndCase
+        $reports = @($e.reports | ForEach-Object { $p = ConvertTo-ReportParams $_; New-ErrorReport @p })
+        Format-RunEnd $e.summary.results $e.summary.notes $e.summary.exitCode $e.summary.durationMs $e.summary.cancelled $reports |
+            Should -BeExactly $e.expected
+        $h = $script:Fixture.headerCase.input
+        Format-LogHeader @{ Started = $h.started; Source = $h.source; System = $h.system; Options = $h.options; LogFile = $h.logFile } |
+            Should -BeExactly $script:Fixture.headerCase.expected
+    }
+}
+
+Describe 'Failure capture' {
+    BeforeAll {
+        Mock Confirm-Action { $true }
+        $script:LogFile = $null
+    }
+
+    It 'Invoke-Native attaches the command, exit code and output to the error' -Skip:($IsWindows) {
+        $err = $null
+        try { Invoke-Native -FilePath 'sh' -ArgumentList @('-c', 'echo first; echo second >&2; exit 3') 6>$null }
+        catch { $err = $_ }
+        $err | Should -Not -BeNullOrEmpty
+        $err.Exception.Data['ExitCode'] | Should -Be 3
+        $err.Exception.Data['Command'] | Should -Be 'sh -c echo first; echo second >&2; exit 3'
+        @($err.Exception.Data['Output']) | Should -Contain 'first'
+        @($err.Exception.Data['Output']) | Should -Contain 'second'
+
+        $report = ConvertTo-ErrorReport -Step 'Docker' -ErrorRecord $err
+        $report.Summary | Should -Be 'Command failed (exit code 3)'
+        $report.ExitCode | Should -Be 3
+        $report.Details | Should -Contain 'PowerShell stack:'
+    }
+
+    It 'names the failing command inside a traced root script' -Skip:($IsWindows) {
+        $file = Join-Path ([IO.Path]::GetTempPath()) "trace-$([guid]::NewGuid().ToString('N')).sh"
+        [IO.File]::WriteAllText($file, ("$script:ShPreamble`necho hello`nls /nonexistent-dir-xyz`necho never`n" -replace "`r`n", "`n"))
+        try {
+            $err = $null
+            try { Invoke-Native -FilePath 'sh' -ArgumentList @($file) 6>$null } catch { $err = $_ }
+            $err.Exception.Data['Command'] | Should -Be 'ls /nonexistent-dir-xyz'
+            $err.Exception.Data['ExitCode'] | Should -BeGreaterThan 0
+            @($err.Exception.Data['Output']) | Should -Contain '$ ls /nonexistent-dir-xyz'
+            @($err.Exception.Data['Output']) | Should -Not -Contain 'never'
+        } finally { Remove-Item $file -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'reports plain errors with where they happened' {
+        $err = $null
+        try { throw 'Unsupported operating system.' } catch { $err = $_ }
+        $report = ConvertTo-ErrorReport -Step 'FATAL' -ErrorRecord $err
+        $report.Summary | Should -Be 'Unsupported operating system.'
+        $report.Command | Should -BeNullOrEmpty
+        $report.Where | Should -Match 'Install\.Tests\.ps1 line \d+'
+    }
+
+    It 'Write-InstallLog and Add-LogText never throw when the log cannot be written' {
+        $blocker = Join-Path ([IO.Path]::GetTempPath()) "blocker-$([guid]::NewGuid().ToString('N'))"
+        Set-Content -LiteralPath $blocker -Value ''
+        try {
+            $script:LogFile = Join-Path $blocker 'sub/install.log'
+            $script:LogWarned = $false
+            { Write-InstallLog 'INFO' 'hello' 6>$null; Add-LogText 'x' 6>$null } | Should -Not -Throw
+            $script:LogWarned | Should -BeTrue
+        } finally {
+            $script:LogFile = $null
+            Remove-Item $blocker -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'writes a readable timeline to the log file' {
+        $file = Join-Path ([IO.Path]::GetTempPath()) "log-$([guid]::NewGuid().ToString('N')).log"
+        try {
+            $script:LogFile = $file
+            $script:LogStep = 'Docker'
+            Write-InstallLog 'INFO' "Downloading https://u:pw@example.com/x"
+            Add-Failure 'Docker' ([System.Management.Automation.ErrorRecord]::new([Exception]::new('Could not get lock /var/lib/dpkg/lock-frontend'), 'x', 'NotSpecified', $null))
+            $text = Get-Content -LiteralPath $file -Raw
+            $text | Should -Match 'INFO   Docker   Downloading https://\*\*\*:\*\*\*@example\.com/x'
+            $text | Should -Match 'ERROR  Docker   Could not get lock'
+            $text | Should -Match '\| Hint: Another package manager'
+        } finally {
+            $script:LogFile = $null; $script:LogStep = ''
+            $script:Failures.Clear()
+            Remove-Item $file -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

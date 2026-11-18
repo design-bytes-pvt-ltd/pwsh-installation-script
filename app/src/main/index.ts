@@ -1,12 +1,82 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { defaultLogDir, describeOptions, describeSystem, fileStamp, InstallLogger, pruneOldLogs } from './core/logger';
 import { probeSystem, runInstall } from './core/orchestrator';
 import { InstallOptions } from './core/types';
 
 let mainWindow: BrowserWindow | null = null;
 let activeController: AbortController | null = null;
-let lastLogPath: string | null = null;
+/** The logger of the running install, or of the last one (for "Show log" / "Copy error report"). */
+let currentLogger: InstallLogger | null = null;
+let crashLogger: InstallLogger | null = null;
+let lastCrashDialog = 0;
+
+function appSource(): string {
+  return `desktop app ${app.getVersion()} (Electron ${process.versions.electron}, Node ${process.versions.node})`;
+}
+
+/** The log that unexpected errors go to: the running install's, else a crash log. */
+function loggerForCrash(): InstallLogger {
+  if (activeController && currentLogger) return currentLogger;
+  if (!crashLogger) {
+    const dir = defaultLogDir();
+    pruneOldLogs(dir);
+    crashLogger = new InstallLogger(path.join(dir, `crash-${fileStamp(new Date())}.log`), {
+      source: appSource(),
+      system: describeSystem(),
+      options: 'none (no install running)',
+    });
+  }
+  return crashLogger;
+}
+
+/** Last-resort handler: log the error in full and tell the user where the details are. */
+function handleCrash(kind: string, err: unknown, showDialog = true): void {
+  try {
+    const logger = loggerForCrash();
+    const report = logger.crash(kind, err);
+    console.error(`[${kind}]`, err);
+    // At most one dialog every 10 s, so an error loop cannot flood the screen.
+    if (showDialog && app.isReady() && Date.now() - lastCrashDialog > 10_000) {
+      lastCrashDialog = Date.now();
+      dialog.showErrorBox(
+        'The installer hit an unexpected error',
+        `${report.summary}${report.hint ? `\n\n${report.hint}` : ''}\n\nThe full details were saved to:\n${logger.filePath}`
+      );
+    }
+  } catch (loggingError) {
+    console.error('[crash handler failed]', loggingError, err);
+  }
+}
+
+process.on('uncaughtException', (err) => handleCrash('Uncaught exception', err));
+process.on('unhandledRejection', (reason) => handleCrash('Unhandled promise rejection', reason));
+app.on('render-process-gone', (_event, _contents, details) => {
+  if (details.reason !== 'clean-exit') {
+    handleCrash('Window crashed', new Error(`The window's renderer process stopped (reason: ${details.reason}, exit code ${details.exitCode}).`));
+  }
+});
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason !== 'clean-exit' && details.reason !== 'killed') {
+    handleCrash(
+      'Helper process crashed',
+      new Error(`Electron ${details.type} process stopped (reason: ${details.reason}, exit code ${details.exitCode}).`),
+      false
+    );
+  }
+});
+
+/** Validates an error report sent by the renderer (untrusted input). */
+function sanitizeRendererError(raw: unknown): Error {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const text = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const err = new Error(text(o.message, 2000) || 'Unknown renderer error');
+  err.name = 'RendererError';
+  const where = text(o.source, 500);
+  err.stack = `${err.name}: ${err.message}\n${text(o.stack, 8000)}${where ? `\n    at ${where}` : ''}`;
+  return err;
+}
 
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
@@ -77,18 +147,27 @@ app.whenReady().then(() => {
     const options = sanitizeOptions(rawOptions);
     const controller = new AbortController();
     activeController = controller;
-    const logPath = path.join(app.getPath('logs'), `install-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
-    lastLogPath = logPath;
+    const logDir = defaultLogDir();
+    pruneOldLogs(logDir);
+    const logger = new InstallLogger(path.join(logDir, `install-app-${fileStamp(new Date())}.log`), {
+      source: appSource(),
+      system: describeSystem(),
+      options: describeOptions(options),
+    });
+    currentLogger = logger;
     try {
-      fs.mkdirSync(path.dirname(logPath), { recursive: true });
       await runInstall(
         options,
         (evt) => {
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('install:event', evt);
         },
         controller.signal,
-        logPath
+        logger
       );
+    } catch (err) {
+      // runInstall reports step failures itself; anything reaching here is a bug.
+      handleCrash('Installer error', err);
+      throw err;
     } finally {
       // Only clear the controller if it still belongs to this run.
       if (activeController === controller) activeController = null;
@@ -100,7 +179,19 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('install:show-log', () => {
-    if (lastLogPath && fs.existsSync(lastLogPath)) shell.showItemInFolder(lastLogPath);
+    const file = currentLogger?.filePath;
+    if (file && fs.existsSync(file)) shell.showItemInFolder(file);
+  });
+
+  ipcMain.handle('install:copy-report', () => {
+    const text = currentLogger?.reportText() ?? '';
+    if (!text) return false;
+    clipboard.writeText(`${text}\nFull log: ${currentLogger?.filePath}\n`);
+    return true;
+  });
+
+  ipcMain.handle('log:renderer-error', (_event, raw: unknown) => {
+    handleCrash('Renderer error', sanitizeRendererError(raw), false);
   });
 
   createWindow();

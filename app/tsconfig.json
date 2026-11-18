@@ -1,0 +1,9 @@
+{
+  // Editors only discover files named tsconfig.json. This one gives the main-process code
+  // (src/main, including tests) the same settings and Node types as `npm run build:main`.
+  // The renderer has its own tsconfig.json in src/renderer.
+  "extends": "./tsconfig.main.json",
+  "compilerOptions": {
+    "types": ["node"]
+  }
+}

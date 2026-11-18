@@ -108,6 +108,12 @@ describe('LineSplitter', () => {
     return lines;
   };
 
+  it('keeps only the last frame of spinners that redraw with ESC[<n>G', () => {
+    expect(collect(['\x1b[?25l\x1b[1Gpulling manifest ⠋ \x1b[K\x1b[1Gpulling manifest ⠙ \x1b[K\x1b[1Gpulling manifest \x1b[K\x1b[?25h\n'])).toEqual([
+      'pulling manifest',
+    ]);
+  });
+
   it('joins lines split across chunks', () => {
     expect(collect(['hel', 'lo\nwor', 'ld\n'])).toEqual(['hello', 'world']);
   });

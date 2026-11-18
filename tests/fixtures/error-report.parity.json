@@ -1,0 +1,389 @@
+{
+  "_comment": "Shared contract for the failure log written by install.ps1 (tests/Install.Tests.ps1) and the Electron app (app/src/main/core/__tests__/error-report.parity.test.ts). Both must produce exactly these hint ids and this text. If you change the format, hints or redaction rules, change errors.ts, install.ps1 and this file together.",
+  "hints": [
+    {
+      "id": "elevation-cancelled",
+      "exitCodes": [],
+      "pattern": "password prompt was cancelled|User canceled|\\(-128\\)|Request dismissed|Not authorized|cancell?ed by the user|no password was provided|a password is required|incorrect password attempts",
+      "text": "The administrator password prompt was cancelled or denied. Run the installer again and approve the prompt."
+    },
+    {
+      "id": "ollama-unreachable",
+      "exitCodes": [],
+      "pattern": "Ollama server did not become reachable|Ollama is not running|(127\\.0\\.0\\.1|localhost):11434",
+      "text": "The Ollama server is not running. Start the Ollama app (or run 'ollama serve') and try again."
+    },
+    {
+      "id": "model-not-found",
+      "exitCodes": [],
+      "pattern": "pull model manifest|file does not exist|manifest unknown",
+      "text": "Ollama could not find this model. Check the exact name and tag at https://ollama.com/library."
+    },
+    {
+      "id": "signature-invalid",
+      "exitCodes": [],
+      "pattern": "signature check failed|signature is missing or invalid|code object is not signed|a sealed resource is missing|invalid signature",
+      "text": "The downloaded installer failed its signature check, so it was not run. Retry on a trusted network, or download it from the vendor site."
+    },
+    {
+      "id": "wsl-reboot",
+      "exitCodes": [
+        3010
+      ],
+      "pattern": "reboot is required|restart is required|restart your computer",
+      "text": "Windows needs a restart to finish this install (WSL2). Reboot, then run the installer again."
+    },
+    {
+      "id": "dpkg-lock",
+      "exitCodes": [],
+      "pattern": "Could not get lock|dpkg frontend lock|Unable to acquire the dpkg",
+      "text": "Another package manager (apt or Software Updater) is running. Wait for it to finish, then retry."
+    },
+    {
+      "id": "disk-full",
+      "exitCodes": [],
+      "pattern": "ENOSPC|No space left on device|not enough (disk )?space|disk is full",
+      "text": "The disk is full. Free some space (each model needs several GB) and retry."
+    },
+    {
+      "id": "winget-missing",
+      "exitCodes": [],
+      "pattern": "winget(\\.exe)?.{0,40}(is not recognized|not found|ENOENT)",
+      "text": "winget (App Installer) is missing or broken. Install 'App Installer' from the Microsoft Store and retry."
+    },
+    {
+      "id": "needs-admin",
+      "exitCodes": [
+        740
+      ],
+      "pattern": "requires elevation|0x80070005|Access is denied|Permission denied|EACCES|EPERM|must be run as root|are you root",
+      "text": "This step needs administrator rights. Approve the administrator prompt, or run the installer from an administrator account."
+    },
+    {
+      "id": "network",
+      "exitCodes": [],
+      "pattern": "ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|getaddrinfo|Could not resolve host|Network is unreachable|Failed to download|timed out|unable to connect|certificate verify failed|unable to get local issuer certificate",
+      "text": "A network request failed. Check your internet connection, proxy or firewall, then retry."
+    },
+    {
+      "id": "command-not-found",
+      "exitCodes": [
+        127
+      ],
+      "pattern": "ENOENT|command not found|is not recognized as|not found in PATH|No such file or directory",
+      "text": "A required program or file was not found. Make sure it is installed and on PATH, then retry."
+    }
+  ],
+  "reportCases": [
+    {
+      "label": "dpkg lock (pkexec)",
+      "input": {
+        "step": "Docker",
+        "message": "Command failed (exit code 100)",
+        "command": "apt-get install -y /tmp/docker-ollama-ab12/docker-desktop-amd64.deb",
+        "exitCode": 100,
+        "elevated": "pkexec",
+        "output": [
+          "$ apt-get install -y /tmp/docker-ollama-ab12/docker-desktop-amd64.deb",
+          "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4123 (apt)",
+          "E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?"
+        ]
+      },
+      "index": 1,
+      "total": 11,
+      "hintId": "dpkg-lock",
+      "expected": "================================================================================\n FAILURE REPORT 1 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 100)\n Command       apt-get install -y /tmp/docker-ollama-ab12/docker-desktop-amd64.deb\n Exit code     100\n Elevated      yes (pkexec)\n Hint          Another package manager (apt or Software Updater) is running. Wait for it to finish, then retry.\n Last output (3 lines)\n   | $ apt-get install -y /tmp/docker-ollama-ab12/docker-desktop-amd64.deb\n   | E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4123 (apt)\n   | E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?"
+    },
+    {
+      "label": "needs admin (exit 740)",
+      "input": {
+        "step": "Docker",
+        "message": "Command failed (exit code 740)",
+        "command": "C:\\Temp\\DockerDesktopInstaller.exe install --quiet --accept-license",
+        "exitCode": 740,
+        "where": "install.ps1 line 884 (Install-DockerWindows)"
+      },
+      "index": 2,
+      "total": 11,
+      "hintId": "needs-admin",
+      "expected": "================================================================================\n FAILURE REPORT 2 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 740)\n Command       C:\\Temp\\DockerDesktopInstaller.exe install --quiet --accept-license\n Exit code     740\n Where         install.ps1 line 884 (Install-DockerWindows)\n Hint          This step needs administrator rights. Approve the administrator prompt, or run the installer from an administrator account."
+    },
+    {
+      "label": "program missing (ENOENT)",
+      "input": {
+        "step": "Ollama",
+        "message": "spawn curl ENOENT",
+        "where": "platform.js line 99 (execCommand)",
+        "details": [
+          "Error code: ENOENT"
+        ]
+      },
+      "index": 3,
+      "total": 11,
+      "hintId": "command-not-found",
+      "expected": "================================================================================\n FAILURE REPORT 3 of 11: Ollama\n--------------------------------------------------------------------------------\n What failed   spawn curl ENOENT\n Where         platform.js line 99 (execCommand)\n Hint          A required program or file was not found. Make sure it is installed and on PATH, then retry.\n Details\n   | Error code: ENOENT"
+    },
+    {
+      "label": "winget missing",
+      "input": {
+        "step": "Ollama",
+        "message": "spawn winget ENOENT",
+        "details": [
+          "Error code: ENOENT"
+        ]
+      },
+      "index": 4,
+      "total": 11,
+      "hintId": "winget-missing",
+      "expected": "================================================================================\n FAILURE REPORT 4 of 11: Ollama\n--------------------------------------------------------------------------------\n What failed   spawn winget ENOENT\n Hint          winget (App Installer) is missing or broken. Install 'App Installer' from the Microsoft Store and retry.\n Details\n   | Error code: ENOENT"
+    },
+    {
+      "label": "download failed",
+      "input": {
+        "step": "Ollama",
+        "message": "Failed to download https://ollama.com/install.sh: HTTP 503 Service Unavailable"
+      },
+      "index": 5,
+      "total": 11,
+      "hintId": "network",
+      "expected": "================================================================================\n FAILURE REPORT 5 of 11: Ollama\n--------------------------------------------------------------------------------\n What failed   Failed to download https://ollama.com/install.sh: HTTP 503 Service Unavailable\n Hint          A network request failed. Check your internet connection, proxy or firewall, then retry."
+    },
+    {
+      "label": "password prompt cancelled",
+      "input": {
+        "step": "Docker",
+        "message": "The administrator password prompt was cancelled or denied.",
+        "elevated": "osascript"
+      },
+      "index": 6,
+      "total": 11,
+      "hintId": "elevation-cancelled",
+      "expected": "================================================================================\n FAILURE REPORT 6 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   The administrator password prompt was cancelled or denied.\n Elevated      yes (macOS administrator prompt)\n Hint          The administrator password prompt was cancelled or denied. Run the installer again and approve the prompt."
+    },
+    {
+      "label": "model not found",
+      "input": {
+        "step": "Models: doesnotexist:1b",
+        "message": "pull model manifest: file does not exist"
+      },
+      "index": 7,
+      "total": 11,
+      "hintId": "model-not-found",
+      "expected": "================================================================================\n FAILURE REPORT 7 of 11: Models: doesnotexist:1b\n--------------------------------------------------------------------------------\n What failed   pull model manifest: file does not exist\n Hint          Ollama could not find this model. Check the exact name and tag at https://ollama.com/library."
+    },
+    {
+      "label": "WSL needs reboot (exit 3010)",
+      "input": {
+        "step": "Docker",
+        "message": "Command failed (exit code 3010)",
+        "command": "wsl.exe --install --no-distribution",
+        "exitCode": 3010,
+        "elevated": "uac"
+      },
+      "index": 8,
+      "total": 11,
+      "hintId": "wsl-reboot",
+      "expected": "================================================================================\n FAILURE REPORT 8 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 3010)\n Command       wsl.exe --install --no-distribution\n Exit code     3010\n Elevated      yes (Windows UAC prompt)\n Hint          Windows needs a restart to finish this install (WSL2). Reboot, then run the installer again."
+    },
+    {
+      "label": "exit 127",
+      "input": {
+        "step": "Docker",
+        "message": "Command failed (exit code 127)",
+        "command": "systemctl enable --now docker",
+        "exitCode": 127,
+        "elevated": "root"
+      },
+      "index": 9,
+      "total": 11,
+      "hintId": "command-not-found",
+      "expected": "================================================================================\n FAILURE REPORT 9 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 127)\n Command       systemctl enable --now docker\n Exit code     127\n Elevated      yes (already running as root)\n Hint          A required program or file was not found. Make sure it is installed and on PATH, then retry."
+    },
+    {
+      "label": "plain multi-line error, no hint",
+      "input": {
+        "step": "FATAL",
+        "message": "Unsupported operating system.\n  Detected: plan9\n",
+        "details": [
+          "PowerShell stack:",
+          "  at Invoke-Main, install.ps1: line 1041"
+        ]
+      },
+      "index": 10,
+      "total": 11,
+      "hintId": null,
+      "expected": "================================================================================\n FAILURE REPORT 10 of 11: FATAL\n--------------------------------------------------------------------------------\n What failed   Unsupported operating system.\n Details\n   |   Detected: plan9\n   | PowerShell stack:\n   |   at Invoke-Main, install.ps1: line 1041"
+    },
+    {
+      "label": "long output is truncated and secrets are redacted",
+      "input": {
+        "step": "Docker",
+        "message": "Command failed (exit code 1)",
+        "command": "sh /tmp/docker-ollama-cd34/get-docker.sh",
+        "exitCode": 1,
+        "elevated": "sudo",
+        "output": [
+          "step 1 of 24 done",
+          "step 2 of 24 done",
+          "step 3 of 24 done",
+          "step 4 of 24 done",
+          "step 5 of 24 done",
+          "step 6 of 24 done",
+          "step 7 of 24 done",
+          "step 8 of 24 done",
+          "step 9 of 24 done",
+          "step 10 of 24 done",
+          "step 11 of 24 done",
+          "step 12 of 24 done",
+          "step 13 of 24 done",
+          "step 14 of 24 done",
+          "step 15 of 24 done",
+          "step 16 of 24 done",
+          "step 17 of 24 done",
+          "step 18 of 24 done",
+          "step 19 of 24 done",
+          "step 20 of 24 done",
+          "step 21 of 24 done",
+          "step 22 of 24 done",
+          "step 23 of 24 done",
+          "step 24 of 24 done",
+          "Downloading https://builder:hunter2@mirror.example.com/get.sh?token=abc123"
+        ]
+      },
+      "index": 11,
+      "total": 11,
+      "hintId": null,
+      "expected": "================================================================================\n FAILURE REPORT 11 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 1)\n Command       sh /tmp/docker-ollama-cd34/get-docker.sh\n Exit code     1\n Elevated      yes (sudo)\n Last output (last 20 of 25 lines)\n   | step 6 of 24 done\n   | step 7 of 24 done\n   | step 8 of 24 done\n   | step 9 of 24 done\n   | step 10 of 24 done\n   | step 11 of 24 done\n   | step 12 of 24 done\n   | step 13 of 24 done\n   | step 14 of 24 done\n   | step 15 of 24 done\n   | step 16 of 24 done\n   | step 17 of 24 done\n   | step 18 of 24 done\n   | step 19 of 24 done\n   | step 20 of 24 done\n   | step 21 of 24 done\n   | step 22 of 24 done\n   | step 23 of 24 done\n   | step 24 of 24 done\n   | Downloading https://***:***@mirror.example.com/get.sh?token=***"
+    }
+  ],
+  "redactCases": [
+    {
+      "input": "https://alice:s3cret@example.com/repo.git",
+      "expected": "https://***:***@example.com/repo.git"
+    },
+    {
+      "input": "curl -H \"Authorization: Bearer abc.def.ghi\" https://api.example.com",
+      "expected": "curl -H \"Authorization: Bearer ***\" https://api.example.com"
+    },
+    {
+      "input": "PASSWORD=hunter2 token: xyz api_key=k-123&x=1",
+      "expected": "PASSWORD=*** token: *** api_key=***&x=1"
+    },
+    {
+      "input": "tokens: 42 (not a secret)",
+      "expected": "tokens: 42 (not a secret)"
+    }
+  ],
+  "timelineCases": [
+    {
+      "time": "14:02:11.120",
+      "level": "STEP",
+      "step": "Ollama",
+      "message": "running",
+      "expected": "14:02:11.120  STEP   Ollama   running"
+    },
+    {
+      "time": "14:02:40.551",
+      "level": "OUT",
+      "step": "Ollama",
+      "message": ">>> Installing ollama to /usr/local",
+      "expected": "14:02:40.551  OUT    Ollama   >>> Installing ollama to /usr/local"
+    },
+    {
+      "time": "14:03:05.002",
+      "level": "ERROR",
+      "step": "Docker",
+      "message": "Command failed (exit code 100)\nHint: Another package manager is running.\n",
+      "expected": "14:03:05.002  ERROR  Docker   Command failed (exit code 100)\n                              | Hint: Another package manager is running."
+    },
+    {
+      "time": "14:03:06.000",
+      "level": "INFO",
+      "step": "",
+      "message": "Using https://u:p@proxy.local",
+      "expected": "14:03:06.000  INFO            Using https://***:***@proxy.local"
+    }
+  ],
+  "durationCases": [
+    {
+      "ms": 0,
+      "expected": "0s"
+    },
+    {
+      "ms": 59999,
+      "expected": "59s"
+    },
+    {
+      "ms": 60000,
+      "expected": "1m0s"
+    },
+    {
+      "ms": 192999,
+      "expected": "3m12s"
+    },
+    {
+      "ms": 3725000,
+      "expected": "62m5s"
+    }
+  ],
+  "summaryCase": {
+    "input": {
+      "results": {
+        "Ollama": "installed",
+        "Models": "FAILED: Failed to pull: doesnotexist:1b",
+        "Docker": "skipped"
+      },
+      "notes": [
+        "Log out and back in so 'alice' can run docker without sudo."
+      ],
+      "exitCode": 1,
+      "durationMs": 192999,
+      "cancelled": false
+    },
+    "expected": "================================================================================\n SUMMARY   exit code 1   (duration 3m12s)\n   Ollama   installed\n   Models   FAILED: Failed to pull: doesnotexist:1b\n   Docker   skipped\n Next steps:\n   - Log out and back in so 'alice' can run docker without sudo."
+  },
+  "cancelledSummaryCase": {
+    "input": {
+      "results": {
+        "Ollama": "cancelled"
+      },
+      "notes": [],
+      "exitCode": 1,
+      "durationMs": 4000,
+      "cancelled": true
+    },
+    "expected": "================================================================================\n SUMMARY   exit code 1   (duration 4s)   cancelled\n   Ollama   cancelled"
+  },
+  "runEndCase": {
+    "summary": {
+      "results": {
+        "Ollama": "installed",
+        "Models": "FAILED: Failed to pull: doesnotexist:1b",
+        "Docker": "skipped"
+      },
+      "notes": [
+        "Log out and back in so 'alice' can run docker without sudo."
+      ],
+      "exitCode": 1,
+      "durationMs": 192999,
+      "cancelled": false
+    },
+    "reports": [
+      {
+        "step": "Models: doesnotexist:1b",
+        "message": "pull model manifest: file does not exist"
+      }
+    ],
+    "expected": "================================================================================\n SUMMARY   exit code 1   (duration 3m12s)\n   Ollama   installed\n   Models   FAILED: Failed to pull: doesnotexist:1b\n   Docker   skipped\n Next steps:\n   - Log out and back in so 'alice' can run docker without sudo.\n================================================================================\n FAILURE REPORT 1 of 1: Models: doesnotexist:1b\n--------------------------------------------------------------------------------\n What failed   pull model manifest: file does not exist\n Hint          Ollama could not find this model. Check the exact name and tag at https://ollama.com/library.\n================================================================================"
+  },
+  "headerCase": {
+    "input": {
+      "started": "2026-11-18 14:02:11 +05:30",
+      "source": "install.ps1 (PowerShell 7.4.6)",
+      "system": "Ubuntu 24.04.1 LTS (amd64)   user: alice   admin: no",
+      "options": "ollama=yes  models=qwen3:8b  docker=yes  engine=no  dry-run=no",
+      "logFile": "/home/alice/.config/Docker + Ollama Installer/logs/install-cli-20261118-140211.log"
+    },
+    "expected": "================================================================================\n Docker + Ollama Installer log\n Started       2026-11-18 14:02:11 +05:30\n Source        install.ps1 (PowerShell 7.4.6)\n System        Ubuntu 24.04.1 LTS (amd64)   user: alice   admin: no\n Options       ollama=yes  models=qwen3:8b  docker=yes  engine=no  dry-run=no\n Log file      /home/alice/.config/Docker + Ollama Installer/logs/install-cli-20261118-140211.log\n================================================================================"
+  }
+}

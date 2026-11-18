@@ -171,6 +171,29 @@ $('btn-show-log').addEventListener('click', () => {
   void window.installerApi.showLog();
 });
 
+$('btn-copy-report').addEventListener('click', async () => {
+  const btn = $<HTMLButtonElement>('btn-copy-report');
+  const copied = await window.installerApi.copyErrorReport();
+  btn.textContent = copied ? 'Copied' : 'Nothing to copy';
+  setTimeout(() => (btn.textContent = 'Copy error report'), 2000);
+});
+
+// Send unexpected renderer errors to the main process so they land in the log file.
+window.addEventListener('error', (e) => {
+  void window.installerApi.reportError({
+    message: e.message || String(e.error),
+    stack: e.error instanceof Error ? e.error.stack : undefined,
+    source: e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : undefined,
+  });
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason;
+  void window.installerApi.reportError({
+    message: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
 function renderSummary(event: Extract<InstallEvent, { type: 'summary' }>): void {
   const resultsEl = $('summary-results');
   resultsEl.replaceChildren();
@@ -180,6 +203,18 @@ function renderSummary(event: Extract<InstallEvent, { type: 'summary' }>): void 
     row.append(el('span', step), el('span', value, `badge ${cls}`.trim()));
     resultsEl.appendChild(row);
   }
+
+  const failures = event.failures ?? [];
+  $('summary-failures').replaceChildren(
+    ...failures.map((f) => {
+      const li = el('li');
+      li.append(el('span', f.step, 'failure-step'), el('span', f.summary));
+      if (f.hint) li.appendChild(el('p', f.hint, 'failure-hint'));
+      return li;
+    })
+  );
+  $('summary-failures-wrap').hidden = failures.length === 0;
+  $('btn-copy-report').hidden = failures.length === 0;
 
   const notesEl = $('summary-notes');
   notesEl.replaceChildren(...event.notes.map((n) => el('li', n)));
