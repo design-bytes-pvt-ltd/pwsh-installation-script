@@ -20,7 +20,7 @@ const header = { source: 'test', system: 'TestOS (amd64)   user: t   admin: no',
 
 describe('InstallLogger', () => {
   it('writes header, timeline, summary and failure reports', () => {
-    const file = path.join(tmp(), 'nested', 'install-app-x.log');
+    const file = path.join(tmp(), 'nested', 'install-x.log');
     const logger = new InstallLogger(file, header);
     logger.event({ type: 'step', step: 'Ollama', status: 'running' });
     logger.event({ type: 'log', level: 'info', message: 'Downloading https://u:pw@example.com/x', timestamp: '' });
@@ -74,7 +74,7 @@ describe('log helpers', () => {
   it('keeps only the newest logs', () => {
     const dir = tmp();
     for (let i = 0; i < 13; i++) {
-      const f = path.join(dir, `install-app-${i}.log`);
+      const f = path.join(dir, `install-${i}.log`);
       fs.writeFileSync(f, '');
       fs.utimesSync(f, new Date(2026, 0, 1, 0, i), new Date(2026, 0, 1, 0, i));
     }
@@ -83,11 +83,11 @@ describe('log helpers', () => {
     const left = fs.readdirSync(dir).sort();
     expect(left).toContain('other.txt');
     expect(left.filter((f) => f.endsWith('.log'))).toHaveLength(10);
-    expect(left).not.toContain('install-app-0.log');
+    expect(left).not.toContain('install-0.log');
     expect(() => pruneOldLogs(path.join(dir, 'missing'))).not.toThrow();
   });
 
-  it('uses the same folders as install.ps1', () => {
+  it('uses the OS log folder', () => {
     expect(defaultLogDir('darwin', {}, '/Users/a')).toBe('/Users/a/Library/Logs/Docker + Ollama Installer');
     expect(defaultLogDir('linux', {}, '/home/a')).toBe('/home/a/.config/Docker + Ollama Installer/logs');
     expect(defaultLogDir('linux', { XDG_CONFIG_HOME: '/x' }, '/home/a')).toBe('/x/Docker + Ollama Installer/logs');

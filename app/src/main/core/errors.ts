@@ -1,19 +1,17 @@
 /**
  * Turns anything thrown during an install into a readable failure report.
  *
- * The hint table, redaction rules and report layout are mirrored in install.ps1
- * (Get-ErrorHint, Protect-LogText, Format-FailureReport). tests/fixtures/error-report.parity.json
- * is checked by both test suites, so change both implementations and the fixture together.
+ * The expected report text, hints and masking are pinned by __tests__/fixtures/error-report.json;
+ * update it (see error-report.fixture.test.ts) when you change the format on purpose.
  */
 
-export type ElevationKind = 'uac' | 'osascript' | 'pkexec' | 'sudo-askpass' | 'sudo' | 'root';
+export type ElevationKind = 'uac' | 'osascript' | 'pkexec' | 'sudo-askpass' | 'root';
 
 export const ELEVATION_LABELS: Record<string, string> = {
   uac: 'yes (Windows UAC prompt)',
   osascript: 'yes (macOS administrator prompt)',
   pkexec: 'yes (pkexec)',
   'sudo-askpass': 'yes (sudo with a password dialog)',
-  sudo: 'yes (sudo)',
   root: 'yes (already running as root)',
 };
 
@@ -92,7 +90,7 @@ export const THIN_RULE = '-'.repeat(80);
 export interface Hint {
   id: string;
   exitCodes?: number[];
-  /** Case-insensitive; must also be a valid .NET regex (install.ps1 uses the same strings). */
+  /** Case-insensitive regular expression. */
   pattern?: string;
   text: string;
 }
@@ -180,7 +178,7 @@ function cleanLines(lines: string[]): string[] {
   return lines.map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim() !== '');
 }
 
-/** Builds a report from plain fields. install.ps1's New-ErrorReport does the same. */
+/** Builds a report from plain fields: splits the summary off, truncates output and picks a hint. */
 export function createErrorReport(input: ReportInput): ErrorReport {
   const messageLines = cleanLines(String(input.message ?? '').split(/\r?\n/));
   const summary = messageLines[0]?.trim() || 'Unknown error';
@@ -276,7 +274,7 @@ export function toErrorReport(err: unknown, step: string): ErrorReport {
 
 const field = (name: string, value: string) => ` ${name.padEnd(13)} ${value}`;
 
-/** The boxed FAILURE REPORT block (no trailing newline). Identical to install.ps1's output. */
+/** The boxed FAILURE REPORT block (no trailing newline). */
 export function formatFailureReport(r: ErrorReport, index: number, total: number): string {
   const lines = [RULE, ` FAILURE REPORT ${index} of ${total}: ${r.step}`, THIN_RULE, field('What failed', r.summary)];
   if (r.command) lines.push(field('Command', r.command));

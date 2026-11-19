@@ -149,7 +149,7 @@ app.whenReady().then(() => {
     activeController = controller;
     const logDir = defaultLogDir();
     pruneOldLogs(logDir);
-    const logger = new InstallLogger(path.join(logDir, `install-app-${fileStamp(new Date())}.log`), {
+    const logger = new InstallLogger(path.join(logDir, `install-${fileStamp(new Date())}.log`), {
       source: appSource(),
       system: describeSystem(),
       options: describeOptions(options),

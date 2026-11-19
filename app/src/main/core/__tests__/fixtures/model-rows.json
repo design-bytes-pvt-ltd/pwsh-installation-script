@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared contract for install.ps1 (tests/Install.Tests.ps1) and the Electron app (app/src/main/core/__tests__/parity.test.ts). Both must produce exactly these rows, tiers, defaults and budgets. If you change the rules, change both implementations and this file together.",
+  "_comment": "Expected rows, tiers, defaults and memory budgets for edge-case inputs, checked by model-rows.fixture.test.ts. If you change the model rules on purpose, update this file.",
   "catalog": [
     { "name": "huge:70b", "size_gb": 40, "min_memory_gb": 48 },
     { "name": "tiny:1b", "size_gb": 0.5, "min_memory_gb": 2 },

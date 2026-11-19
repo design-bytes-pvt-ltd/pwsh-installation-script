@@ -1,79 +1,5 @@
 {
-  "_comment": "Shared contract for the failure log written by install.ps1 (tests/Install.Tests.ps1) and the Electron app (app/src/main/core/__tests__/error-report.parity.test.ts). Both must produce exactly these hint ids and this text. If you change the format, hints or redaction rules, change errors.ts, install.ps1 and this file together.",
-  "hints": [
-    {
-      "id": "elevation-cancelled",
-      "exitCodes": [],
-      "pattern": "password prompt was cancelled|User canceled|\\(-128\\)|Request dismissed|Not authorized|cancell?ed by the user|no password was provided|a password is required|incorrect password attempts",
-      "text": "The administrator password prompt was cancelled or denied. Run the installer again and approve the prompt."
-    },
-    {
-      "id": "ollama-unreachable",
-      "exitCodes": [],
-      "pattern": "Ollama server did not become reachable|Ollama is not running|(127\\.0\\.0\\.1|localhost):11434",
-      "text": "The Ollama server is not running. Start the Ollama app (or run 'ollama serve') and try again."
-    },
-    {
-      "id": "model-not-found",
-      "exitCodes": [],
-      "pattern": "pull model manifest|file does not exist|manifest unknown",
-      "text": "Ollama could not find this model. Check the exact name and tag at https://ollama.com/library."
-    },
-    {
-      "id": "signature-invalid",
-      "exitCodes": [],
-      "pattern": "signature check failed|signature is missing or invalid|code object is not signed|a sealed resource is missing|invalid signature",
-      "text": "The downloaded installer failed its signature check, so it was not run. Retry on a trusted network, or download it from the vendor site."
-    },
-    {
-      "id": "wsl-reboot",
-      "exitCodes": [
-        3010
-      ],
-      "pattern": "reboot is required|restart is required|restart your computer",
-      "text": "Windows needs a restart to finish this install (WSL2). Reboot, then run the installer again."
-    },
-    {
-      "id": "dpkg-lock",
-      "exitCodes": [],
-      "pattern": "Could not get lock|dpkg frontend lock|Unable to acquire the dpkg",
-      "text": "Another package manager (apt or Software Updater) is running. Wait for it to finish, then retry."
-    },
-    {
-      "id": "disk-full",
-      "exitCodes": [],
-      "pattern": "ENOSPC|No space left on device|not enough (disk )?space|disk is full",
-      "text": "The disk is full. Free some space (each model needs several GB) and retry."
-    },
-    {
-      "id": "winget-missing",
-      "exitCodes": [],
-      "pattern": "winget(\\.exe)?.{0,40}(is not recognized|not found|ENOENT)",
-      "text": "winget (App Installer) is missing or broken. Install 'App Installer' from the Microsoft Store and retry."
-    },
-    {
-      "id": "needs-admin",
-      "exitCodes": [
-        740
-      ],
-      "pattern": "requires elevation|0x80070005|Access is denied|Permission denied|EACCES|EPERM|must be run as root|are you root",
-      "text": "This step needs administrator rights. Approve the administrator prompt, or run the installer from an administrator account."
-    },
-    {
-      "id": "network",
-      "exitCodes": [],
-      "pattern": "ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|getaddrinfo|Could not resolve host|Network is unreachable|Failed to download|timed out|unable to connect|certificate verify failed|unable to get local issuer certificate",
-      "text": "A network request failed. Check your internet connection, proxy or firewall, then retry."
-    },
-    {
-      "id": "command-not-found",
-      "exitCodes": [
-        127
-      ],
-      "pattern": "ENOENT|command not found|is not recognized as|not found in PATH|No such file or directory",
-      "text": "A required program or file was not found. Make sure it is installed and on PATH, then retry."
-    }
-  ],
+  "_comment": "Expected output of the failure log (app/src/main/core/errors.ts), checked by error-report.fixture.test.ts. If you change the report format, hints or masking on purpose, update the expected text here.",
   "reportCases": [
     {
       "label": "dpkg lock (pkexec)",
@@ -101,12 +27,12 @@
         "message": "Command failed (exit code 740)",
         "command": "C:\\Temp\\DockerDesktopInstaller.exe install --quiet --accept-license",
         "exitCode": 740,
-        "where": "install.ps1 line 884 (Install-DockerWindows)"
+        "where": "docker.js line 162 (installDocker)"
       },
       "index": 2,
       "total": 11,
       "hintId": "needs-admin",
-      "expected": "================================================================================\n FAILURE REPORT 2 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 740)\n Command       C:\\Temp\\DockerDesktopInstaller.exe install --quiet --accept-license\n Exit code     740\n Where         install.ps1 line 884 (Install-DockerWindows)\n Hint          This step needs administrator rights. Approve the administrator prompt, or run the installer from an administrator account."
+      "expected": "================================================================================\n FAILURE REPORT 2 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 740)\n Command       C:\\Temp\\DockerDesktopInstaller.exe install --quiet --accept-license\n Exit code     740\n Where         docker.js line 162 (installDocker)\n Hint          This step needs administrator rights. Approve the administrator prompt, or run the installer from an administrator account."
     },
     {
       "label": "program missing (ENOENT)",
@@ -202,17 +128,19 @@
     {
       "label": "plain multi-line error, no hint",
       "input": {
-        "step": "FATAL",
-        "message": "Unsupported operating system.\n  Detected: plan9\n",
+        "step": "Docker",
+        "message": "Docker installation finished but Docker Desktop was not found.\n  Looked in /Applications/Docker.app\n",
+        "where": "docker.js line 181 (installDocker)",
         "details": [
-          "PowerShell stack:",
-          "  at Invoke-Main, install.ps1: line 1041"
+          "Stack trace:",
+          "  at installDocker (docker.js:181:11)",
+          "  at async runStep (orchestrator.js:84:28)"
         ]
       },
       "index": 10,
       "total": 11,
       "hintId": null,
-      "expected": "================================================================================\n FAILURE REPORT 10 of 11: FATAL\n--------------------------------------------------------------------------------\n What failed   Unsupported operating system.\n Details\n   |   Detected: plan9\n   | PowerShell stack:\n   |   at Invoke-Main, install.ps1: line 1041"
+      "expected": "================================================================================\n FAILURE REPORT 10 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Docker installation finished but Docker Desktop was not found.\n Where         docker.js line 181 (installDocker)\n Details\n   |   Looked in /Applications/Docker.app\n   | Stack trace:\n   |   at installDocker (docker.js:181:11)\n   |   at async runStep (orchestrator.js:84:28)"
     },
     {
       "label": "long output is truncated and secrets are redacted",
@@ -221,7 +149,7 @@
         "message": "Command failed (exit code 1)",
         "command": "sh /tmp/docker-ollama-cd34/get-docker.sh",
         "exitCode": 1,
-        "elevated": "sudo",
+        "elevated": "sudo-askpass",
         "output": [
           "step 1 of 24 done",
           "step 2 of 24 done",
@@ -253,7 +181,7 @@
       "index": 11,
       "total": 11,
       "hintId": null,
-      "expected": "================================================================================\n FAILURE REPORT 11 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 1)\n Command       sh /tmp/docker-ollama-cd34/get-docker.sh\n Exit code     1\n Elevated      yes (sudo)\n Last output (last 20 of 25 lines)\n   | step 6 of 24 done\n   | step 7 of 24 done\n   | step 8 of 24 done\n   | step 9 of 24 done\n   | step 10 of 24 done\n   | step 11 of 24 done\n   | step 12 of 24 done\n   | step 13 of 24 done\n   | step 14 of 24 done\n   | step 15 of 24 done\n   | step 16 of 24 done\n   | step 17 of 24 done\n   | step 18 of 24 done\n   | step 19 of 24 done\n   | step 20 of 24 done\n   | step 21 of 24 done\n   | step 22 of 24 done\n   | step 23 of 24 done\n   | step 24 of 24 done\n   | Downloading https://***:***@mirror.example.com/get.sh?token=***"
+      "expected": "================================================================================\n FAILURE REPORT 11 of 11: Docker\n--------------------------------------------------------------------------------\n What failed   Command failed (exit code 1)\n Command       sh /tmp/docker-ollama-cd34/get-docker.sh\n Exit code     1\n Elevated      yes (sudo with a password dialog)\n Last output (last 20 of 25 lines)\n   | step 6 of 24 done\n   | step 7 of 24 done\n   | step 8 of 24 done\n   | step 9 of 24 done\n   | step 10 of 24 done\n   | step 11 of 24 done\n   | step 12 of 24 done\n   | step 13 of 24 done\n   | step 14 of 24 done\n   | step 15 of 24 done\n   | step 16 of 24 done\n   | step 17 of 24 done\n   | step 18 of 24 done\n   | step 19 of 24 done\n   | step 20 of 24 done\n   | step 21 of 24 done\n   | step 22 of 24 done\n   | step 23 of 24 done\n   | step 24 of 24 done\n   | Downloading https://***:***@mirror.example.com/get.sh?token=***"
     }
   ],
   "redactCases": [
@@ -379,11 +307,11 @@
   "headerCase": {
     "input": {
       "started": "2026-11-18 14:02:11 +05:30",
-      "source": "install.ps1 (PowerShell 7.4.6)",
+      "source": "desktop app 0.1.0 (Electron 35.7.5, Node 22.16.0)",
       "system": "Ubuntu 24.04.1 LTS (amd64)   user: alice   admin: no",
       "options": "ollama=yes  models=qwen3:8b  docker=yes  engine=no  dry-run=no",
-      "logFile": "/home/alice/.config/Docker + Ollama Installer/logs/install-cli-20261118-140211.log"
+      "logFile": "/home/alice/.config/Docker + Ollama Installer/logs/install-20261118-140211.log"
     },
-    "expected": "================================================================================\n Docker + Ollama Installer log\n Started       2026-11-18 14:02:11 +05:30\n Source        install.ps1 (PowerShell 7.4.6)\n System        Ubuntu 24.04.1 LTS (amd64)   user: alice   admin: no\n Options       ollama=yes  models=qwen3:8b  docker=yes  engine=no  dry-run=no\n Log file      /home/alice/.config/Docker + Ollama Installer/logs/install-cli-20261118-140211.log\n================================================================================"
+    "expected": "================================================================================\n Docker + Ollama Installer log\n Started       2026-11-18 14:02:11 +05:30\n Source        desktop app 0.1.0 (Electron 35.7.5, Node 22.16.0)\n System        Ubuntu 24.04.1 LTS (amd64)   user: alice   admin: no\n Options       ollama=yes  models=qwen3:8b  docker=yes  engine=no  dry-run=no\n Log file      /home/alice/.config/Docker + Ollama Installer/logs/install-20261118-140211.log\n================================================================================"
   }
 }

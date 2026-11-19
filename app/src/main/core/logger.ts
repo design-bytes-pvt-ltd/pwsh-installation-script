@@ -14,11 +14,14 @@ import {
 import { getOsRelease, getTargetOS, isWindowsArm64 } from './platform';
 import { InstallEvent, InstallOptions } from './types';
 
-/** Folder name shared with install.ps1, so the app and the CLI write logs to one place. */
+/** Log folder name; matches the packaged app's productName. */
 export const LOG_DIR_NAME = 'Docker + Ollama Installer';
 export const LOGS_TO_KEEP = 10;
 
-/** Same rules as Electron's app.getPath('logs') and install.ps1's Get-DefaultLogDir. */
+/**
+ * Same folder as Electron's app.getPath('logs') for the packaged app, computed here so it is the
+ * same in dev builds (where the app name differs) and testable without Electron.
+ */
 export function defaultLogDir(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = os.homedir()): string {
   if (platform === 'win32') {
     return path.win32.join(env.APPDATA || path.win32.join(home, 'AppData', 'Roaming'), LOG_DIR_NAME, 'logs');

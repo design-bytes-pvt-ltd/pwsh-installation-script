@@ -10,16 +10,14 @@ import {
   formatSummary,
   formatTimelineLine,
   HeaderFields,
-  HINTS,
   redact,
   ReportInput,
   SummaryFields,
 } from '../errors';
 
-// Shared with tests/Install.Tests.ps1 so the app and install.ps1 write the same log.
-const fixturePath = path.resolve(__dirname, '../../../../../tests/fixtures/error-report.parity.json');
+// Expected log text. If you change the report format, hints or masking on purpose, update the fixture.
+const fixturePath = path.join(__dirname, 'fixtures', 'error-report.json');
 const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as {
-  hints: Array<{ id: string; exitCodes: number[]; pattern: string; text: string }>;
   reportCases: Array<{ label: string; input: ReportInput; index: number; total: number; hintId: string | null; expected: string }>;
   redactCases: Array<{ input: string; expected: string }>;
   timelineCases: Array<{ time: string; level: string; step: string; message: string; expected: string }>;
@@ -30,11 +28,7 @@ const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8')) as {
   headerCase: { input: HeaderFields; expected: string };
 };
 
-describe('failure log parity with install.ps1 (tests/fixtures/error-report.parity.json)', () => {
-  it('uses the same hint table', () => {
-    expect(HINTS.map((h) => ({ id: h.id, exitCodes: h.exitCodes ?? [], pattern: h.pattern ?? '', text: h.text }))).toEqual(fixture.hints);
-  });
-
+describe('failure log format (fixtures/error-report.json)', () => {
   for (const c of fixture.reportCases) {
     it(`report: ${c.label}`, () => {
       const report = createErrorReport(c.input);
@@ -43,19 +37,19 @@ describe('failure log parity with install.ps1 (tests/fixtures/error-report.parit
     });
   }
 
-  it('redacts secrets the same way', () => {
+  it('redacts secrets', () => {
     for (const c of fixture.redactCases) expect(redact(c.input)).toBe(c.expected);
   });
 
-  it('formats timeline lines the same way', () => {
+  it('formats timeline lines', () => {
     for (const c of fixture.timelineCases) expect(formatTimelineLine(c.time, c.level, c.step, c.message)).toBe(c.expected);
   });
 
-  it('formats durations the same way', () => {
+  it('formats durations', () => {
     for (const c of fixture.durationCases) expect(formatDuration(c.ms)).toBe(c.expected);
   });
 
-  it('formats the summary, run end and header the same way', () => {
+  it('formats the summary, run end and header', () => {
     expect(formatSummary(fixture.summaryCase.input)).toBe(fixture.summaryCase.expected);
     expect(formatSummary(fixture.cancelledSummaryCase.input)).toBe(fixture.cancelledSummaryCase.expected);
     expect(formatRunEnd(fixture.runEndCase.summary, fixture.runEndCase.reports.map(createErrorReport))).toBe(fixture.runEndCase.expected);
