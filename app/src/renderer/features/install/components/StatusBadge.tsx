@@ -6,7 +6,7 @@ const TONE_CLASSES: Record<StatusTone, string> = {
   neutral: 'bg-secondary text-secondary-foreground',
   running: 'bg-primary text-primary-foreground',
   done: 'bg-success text-success-foreground',
-  failed: 'bg-destructive text-white',
+  failed: 'bg-destructive text-destructive-foreground',
   cancelled: 'bg-warning text-warning-foreground',
 };
 

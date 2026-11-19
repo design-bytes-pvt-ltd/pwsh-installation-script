@@ -13,7 +13,7 @@ export function LogViewer({ lines }: { lines: readonly string[] }) {
     <pre
       ref={ref}
       aria-label="Installer log"
-      className="max-h-56 overflow-y-auto rounded-md bg-black/30 p-2.5 font-mono text-xs whitespace-pre-wrap text-foreground/80"
+      className="max-h-56 overflow-y-auto rounded-md bg-log p-2.5 font-mono text-xs whitespace-pre-wrap text-foreground/80"
     >
       {lines.join('')}
     </pre>

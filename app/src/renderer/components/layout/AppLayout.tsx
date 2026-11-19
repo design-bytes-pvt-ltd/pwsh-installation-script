@@ -20,8 +20,8 @@ export function AppLayout({ sidebar, children }: { sidebar: ReactNode; children:
       </aside>
       <main className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-background text-foreground">
         {children}
-        <div className="mt-auto py-[32px] px-[48px] flex flex-row items-center justify-between border-t border-[#E6ECE9]">
-          <Typography font="secondary" variant="caption" style={{color: "#8B9893"}}>Takes about 30 minutes</Typography>
+        <div className="mt-auto py-[32px] px-[48px] flex flex-row items-center justify-between border-t border-divider">
+          <Typography font="secondary" variant="caption" className="text-subtle-foreground">Takes about 30 minutes</Typography>
           <Typography font="secondary" variant="caption">hello</Typography>
         </div>
       </main>

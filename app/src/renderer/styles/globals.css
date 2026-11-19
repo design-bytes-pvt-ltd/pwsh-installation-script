@@ -30,6 +30,10 @@
     --color-warning: var(--warning);
     --color-warning-foreground: var(--warning-foreground);
     --color-info: var(--info);
+    --color-divider: var(--divider);
+    --color-log: var(--log);
+    --color-subtle-foreground: var(--subtle-foreground);
+    --color-destructive-foreground: var(--destructive-foreground);
     --color-input: var(--input);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
@@ -56,84 +60,142 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * Color palette: every raw color value in the app lives here, and nowhere else.
+ * Components never use these directly; they use the theme tokens below (`bg-primary`,
+ * `text-muted-foreground`, `border-divider`...), which point at palette entries.
+ * To add a color, add it here first, then map a theme token to it.
+ */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --success: oklch(0.627 0.194 149.214);
-    --success-foreground: oklch(0.985 0 0);
-    --warning: oklch(0.795 0.184 86.047);
-    --warning-foreground: oklch(0.286 0.066 53.813);
-    --info: oklch(0.609 0.126 221.723);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0 0 0);
-    --sidebar-foreground: oklch(1 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    /* Neutrals (Tailwind v4 neutral scale) */
+    --palette-white: oklch(1 0 0);
+    --palette-neutral-50: oklch(0.985 0 0);
+    --palette-neutral-100: oklch(0.97 0 0);
+    --palette-neutral-200: oklch(0.922 0 0);
+    --palette-neutral-300: oklch(0.87 0 0);
+    --palette-neutral-400: oklch(0.708 0 0);
+    --palette-neutral-500: oklch(0.556 0 0);
+    --palette-neutral-600: oklch(0.439 0 0);
+    --palette-neutral-700: oklch(0.371 0 0);
+    --palette-neutral-800: oklch(0.269 0 0);
+    --palette-neutral-900: oklch(0.205 0 0);
+    --palette-neutral-950: oklch(0.145 0 0);
+    --palette-black: oklch(0 0 0);
+
+    /* Sage: green-tinted greys used by the content area */
+    --palette-sage-100: #e6ece9;
+    --palette-sage-500: #8b9893;
+
+    /* Slate (Tailwind v3), used by the dark theme */
+    --palette-slate-50: #f8fafc;
+    --palette-slate-400: #94a3b8;
+    --palette-slate-700: #334155;
+    --palette-slate-800: #1e293b;
+    --palette-slate-850: #162032;
+    --palette-slate-900: #0f172a;
+
+    /* Status hues */
+    --palette-red-500: #ef4444;
+    --palette-red-600: oklch(0.577 0.245 27.325);
+    --palette-green-500: #22c55e;
+    --palette-green-600: oklch(0.627 0.194 149.214);
+    --palette-green-950: #052e16;
+    --palette-yellow-500: oklch(0.795 0.184 86.047);
+    --palette-yellow-950: #422006;
+    --palette-amber-950: oklch(0.286 0.066 53.813);
+    --palette-cyan-500: #06b6d4;
+    --palette-cyan-600: oklch(0.609 0.126 221.723);
+    --palette-blue-500: #3b82f6;
+    --palette-blue-700: oklch(0.488 0.243 264.376);
 }
 
+/* Light theme (the one the app uses) */
+:root {
+    --background: var(--palette-white);
+    --foreground: var(--palette-neutral-950);
+    --card: var(--palette-white);
+    --card-foreground: var(--palette-neutral-950);
+    --popover: var(--palette-white);
+    --popover-foreground: var(--palette-neutral-950);
+    --primary: var(--palette-neutral-900);
+    --primary-foreground: var(--palette-neutral-50);
+    --secondary: var(--palette-neutral-100);
+    --secondary-foreground: var(--palette-neutral-900);
+    --muted: var(--palette-neutral-100);
+    --muted-foreground: var(--palette-neutral-500);
+    --subtle-foreground: var(--palette-sage-500);
+    --accent: var(--palette-neutral-100);
+    --accent-foreground: var(--palette-neutral-900);
+    --destructive: var(--palette-red-600);
+    --destructive-foreground: var(--palette-white);
+    --border: var(--palette-neutral-200);
+    --divider: var(--palette-sage-100);
+    --input: var(--palette-neutral-200);
+    --ring: var(--palette-neutral-400);
+    --log: color-mix(in oklab, var(--palette-black) 30%, transparent);
+    --success: var(--palette-green-600);
+    --success-foreground: var(--palette-neutral-50);
+    --warning: var(--palette-yellow-500);
+    --warning-foreground: var(--palette-amber-950);
+    --info: var(--palette-cyan-600);
+    --chart-1: var(--palette-neutral-300);
+    --chart-2: var(--palette-neutral-500);
+    --chart-3: var(--palette-neutral-600);
+    --chart-4: var(--palette-neutral-700);
+    --chart-5: var(--palette-neutral-800);
+    --radius: 0.625rem;
+    --sidebar: var(--palette-black);
+    --sidebar-foreground: var(--palette-white);
+    --sidebar-primary: var(--palette-neutral-900);
+    --sidebar-primary-foreground: var(--palette-neutral-50);
+    --sidebar-accent: var(--palette-neutral-100);
+    --sidebar-accent-foreground: var(--palette-neutral-900);
+    --sidebar-border: var(--palette-neutral-200);
+    --sidebar-ring: var(--palette-neutral-400);
+}
+
+/* Dark theme: the installer's earlier slate + blue palette. */
 .dark {
-    /* The installer's palette (Tailwind slate + blue), carried over from the original styles.css. */
-    --background: #0f172a;
-    --foreground: #f8fafc;
-    --card: #1e293b;
-    --card-foreground: #f8fafc;
-    --popover: #1e293b;
-    --popover-foreground: #f8fafc;
-    --primary: #3b82f6;
-    --primary-foreground: #ffffff;
-    --secondary: #334155;
-    --secondary-foreground: #f8fafc;
-    --muted: #162032;
-    --muted-foreground: #94a3b8;
-    --accent: #334155;
-    --accent-foreground: #f8fafc;
-    --destructive: #ef4444;
-    --border: #334155;
-    --input: #334155;
-    --ring: #3b82f6;
-    --success: #22c55e;
-    --success-foreground: #052e16;
-    --warning: #eab308;
-    --warning-foreground: #422006;
-    --info: #06b6d4;
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: var(--palette-slate-900);
+    --foreground: var(--palette-slate-50);
+    --card: var(--palette-slate-800);
+    --card-foreground: var(--palette-slate-50);
+    --popover: var(--palette-slate-800);
+    --popover-foreground: var(--palette-slate-50);
+    --primary: var(--palette-blue-500);
+    --primary-foreground: var(--palette-white);
+    --secondary: var(--palette-slate-700);
+    --secondary-foreground: var(--palette-slate-50);
+    --muted: var(--palette-slate-850);
+    --muted-foreground: var(--palette-slate-400);
+    --subtle-foreground: var(--palette-slate-400);
+    --accent: var(--palette-slate-700);
+    --accent-foreground: var(--palette-slate-50);
+    --destructive: var(--palette-red-500);
+    --destructive-foreground: var(--palette-white);
+    --border: var(--palette-slate-700);
+    --divider: var(--palette-slate-700);
+    --input: var(--palette-slate-700);
+    --ring: var(--palette-blue-500);
+    --log: color-mix(in oklab, var(--palette-black) 30%, transparent);
+    --success: var(--palette-green-500);
+    --success-foreground: var(--palette-green-950);
+    --warning: var(--palette-yellow-500);
+    --warning-foreground: var(--palette-yellow-950);
+    --info: var(--palette-cyan-500);
+    --chart-1: var(--palette-neutral-300);
+    --chart-2: var(--palette-neutral-500);
+    --chart-3: var(--palette-neutral-600);
+    --chart-4: var(--palette-neutral-700);
+    --chart-5: var(--palette-neutral-800);
+    --sidebar: var(--palette-neutral-900);
+    --sidebar-foreground: var(--palette-neutral-50);
+    --sidebar-primary: var(--palette-blue-700);
+    --sidebar-primary-foreground: var(--palette-neutral-50);
+    --sidebar-accent: var(--palette-neutral-800);
+    --sidebar-accent-foreground: var(--palette-neutral-50);
+    --sidebar-border: color-mix(in oklab, var(--palette-white) 10%, transparent);
+    --sidebar-ring: var(--palette-neutral-500);
 }
 
 @layer base {
