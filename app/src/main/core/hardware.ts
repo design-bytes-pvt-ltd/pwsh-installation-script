@@ -1,6 +1,7 @@
 import os from 'node:os';
-import { commandExists, execCommand, getArch, getTargetOS } from './platform';
-import { Arch, ModelBudget, TargetOS } from './types';
+import { execCommand } from './exec';
+import { commandExists, getArch, getTargetOS } from './platform';
+import type { Arch, ModelBudget, TargetOS } from '../../shared/types';
 
 export interface GpuInfo {
   vendor: 'NVIDIA' | 'AMD';

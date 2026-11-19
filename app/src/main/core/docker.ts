@@ -1,23 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { downloadFile } from './downloader';
-import {
-  commandExists,
-  createTempDir,
-  execCommand,
-  execElevatedPowerShell,
-  execPrivileged,
-  execPrivilegedScript,
-  getArch,
-  getOsRelease,
-  getTargetOS,
-  getTargetUser,
-  quotePs,
-  quoteSh,
-  removeDirSafe,
-} from './platform';
+import { execElevatedPowerShell, execPrivileged, execPrivilegedScript } from './elevation';
 import { toErrorReport } from './errors';
-import { DockerKind, InstallEvent, TargetOS } from './types';
+import { downloadProgress, logEvent } from './events';
+import { execCommand } from './exec';
+import { commandExists, createTempDir, getArch, getOsRelease, getTargetOS, getTargetUser, quotePs, quoteSh, removeDirSafe } from './platform';
+import type { DockerKind, InstallEvent, TargetOS } from '../../shared/types';
 
 const NOTE_MARKER = '@@NOTE ';
 
@@ -126,8 +115,7 @@ export async function installDocker(options: {
 }): Promise<string> {
   const targetOS = getTargetOS();
   const existing = await detectDocker(targetOS);
-  const log = (level: 'info' | 'warn', message: string, output = false) =>
-    options.emit({ type: 'log', level, message, timestamp: new Date().toISOString(), output });
+  const log = (level: 'info' | 'warn', message: string, output = false) => options.emit(logEvent(message, level, output));
   if (existing !== 'none') {
     log('info', `Docker already installed (${existing})`);
     return 'already present';
@@ -175,8 +163,7 @@ export async function installDocker(options: {
       const dmg = path.join(tmp, 'Docker.dmg');
       await downloadFile(`https://desktop.docker.com/mac/main/${arch}/Docker.dmg`, dmg, {
         signal: options.signal,
-        onProgress: (p) =>
-          options.emit({ type: 'progress', step: 'Docker', label: 'Downloading Docker.dmg', completed: p.completed, total: p.total ?? undefined, percent: p.percent ?? undefined }),
+        onProgress: downloadProgress(options.emit, 'Docker', 'Downloading Docker.dmg'),
       });
       fs.mkdirSync(mount, { recursive: true });
       await execCommand('hdiutil', ['attach', dmg, '-nobrowse', '-quiet', '-mountpoint', mount], exec);
@@ -237,8 +224,7 @@ export async function installDocker(options: {
         const deb = path.join(tmp, 'docker-desktop-amd64.deb');
         await downloadFile('https://desktop.docker.com/linux/main/amd64/docker-desktop-amd64.deb', deb, {
           signal: options.signal,
-          onProgress: (p) =>
-            options.emit({ type: 'progress', step: 'Docker', label: 'Downloading Docker Desktop', completed: p.completed, total: p.total ?? undefined, percent: p.percent ?? undefined }),
+          onProgress: downloadProgress(options.emit, 'Docker', 'Downloading Docker Desktop'),
         });
         await execPrivilegedScript(buildDebianDesktopScript(distro, deb), exec);
       } finally {

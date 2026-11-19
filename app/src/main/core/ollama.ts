@@ -3,18 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { downloadFile } from './downloader';
 import { getOllamaBaseUrl } from './models';
-import {
-  commandExists,
-  createTempDir,
-  execCommand,
-  execPrivileged,
-  execPrivilegedScript,
-  getTargetOS,
-  quotePs,
-  quoteSh,
-  removeDirSafe,
-} from './platform';
-import { InstallEvent, TargetOS } from './types';
+import { execPrivileged, execPrivilegedScript } from './elevation';
+import { downloadProgress, logEvent } from './events';
+import { execCommand } from './exec';
+import { commandExists, createTempDir, getTargetOS, quotePs, quoteSh, removeDirSafe } from './platform';
+import type { InstallEvent, TargetOS } from '../../shared/types';
 
 export async function getOllamaExe(targetOS: TargetOS = getTargetOS()): Promise<string | null> {
   const fromPath = await commandExists('ollama', targetOS);
@@ -57,8 +50,7 @@ export async function waitForOllamaServer(
 ): Promise<void> {
   if (await isOllamaServerRunning(baseUrl)) return;
 
-  const logMsg = (message: string) =>
-    emit({ type: 'log', level: 'info', message, timestamp: new Date().toISOString() });
+  const logMsg = (message: string) => emit(logEvent(message));
 
   logMsg('Waiting for Ollama server to start...');
   for (let i = 0; i < 15; i++) {
@@ -107,16 +99,15 @@ export async function installOllama(options: {
   const targetOS = getTargetOS();
   const existing = await getOllamaExe(targetOS);
   if (existing) {
-    options.emit({ type: 'log', level: 'info', message: `Ollama already installed: ${existing}`, timestamp: new Date().toISOString() });
+    options.emit(logEvent(`Ollama already installed: ${existing}`));
     return 'already present';
   }
   if (options.dryRun) {
-    options.emit({ type: 'log', level: 'info', message: `[dry-run] Would install Ollama on ${targetOS}`, timestamp: new Date().toISOString() });
+    options.emit(logEvent(`[dry-run] Would install Ollama on ${targetOS}`));
     return 'would install';
   }
 
-  const onOutput = (line: string) =>
-    options.emit({ type: 'log', level: 'info', message: line, timestamp: new Date().toISOString(), output: true });
+  const onOutput = (line: string) => options.emit(logEvent(line, 'info', true));
 
   if (targetOS === 'windows') {
     const winget = await commandExists('winget', targetOS);
@@ -139,8 +130,7 @@ export async function installOllama(options: {
         const exe = path.join(tmp, 'OllamaSetup.exe');
         await downloadFile('https://ollama.com/download/OllamaSetup.exe', exe, {
           signal: options.signal,
-          onProgress: (p) =>
-            options.emit({ type: 'progress', step: 'Ollama', label: 'Downloading OllamaSetup.exe', completed: p.completed, total: p.total ?? undefined, percent: p.percent ?? undefined }),
+          onProgress: downloadProgress(options.emit, 'Ollama', 'Downloading OllamaSetup.exe'),
         });
         await verifyAuthenticode(exe, { signal: options.signal, onOutput });
         await execCommand(exe, ['/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES'], { signal: options.signal, onOutput });
@@ -154,8 +144,7 @@ export async function installOllama(options: {
       const zip = path.join(tmp, 'Ollama-darwin.zip');
       await downloadFile('https://ollama.com/download/Ollama-darwin.zip', zip, {
         signal: options.signal,
-        onProgress: (p) =>
-          options.emit({ type: 'progress', step: 'Ollama', label: 'Downloading Ollama-darwin.zip', completed: p.completed, total: p.total ?? undefined, percent: p.percent ?? undefined }),
+        onProgress: downloadProgress(options.emit, 'Ollama', 'Downloading Ollama-darwin.zip'),
       });
       // Extract and verify the signature before anything lands in /Applications.
       const extracted = path.join(tmp, 'extracted');

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { InstalledModelInfo, ModelBudget, ModelCatalogEntry, ModelRow, ModelTier, TargetOS } from './types';
+import { getTargetOS } from './platform';
+import type { InstalledModelInfo, ModelBudget, ModelCatalogEntry, ModelRow, ModelTier, TargetOS } from '../../shared/types';
 
 const FALLBACK_CATALOG: ModelCatalogEntry[] = [
   { name: 'qwen3:0.6b', description: 'Qwen3 0.6B (built-in default)', size_gb: 0.5, min_memory_gb: 2 },
@@ -66,7 +67,7 @@ function walkFiles(dir: string): string[] {
 
 export async function getInstalledModels(
   baseUrl: string = getOllamaBaseUrl(),
-  targetOS: TargetOS = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux',
+  targetOS: TargetOS = getTargetOS(),
   env: NodeJS.ProcessEnv = process.env
 ): Promise<Map<string, InstalledModelInfo>> {
   const installed = new Map<string, InstalledModelInfo>();

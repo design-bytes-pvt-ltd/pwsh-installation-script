@@ -1,11 +1,12 @@
 import { detectDocker, installDocker } from './docker';
 import { ErrorReport, ReportedError, toErrorReport } from './errors';
+import { logEvent } from './events';
 import { getModelBudget } from './hardware';
 import { buildModelRows, getInstalledModels, getOllamaBaseUrl, loadModelCatalog } from './models';
 import { getOllamaExe, installOllama, pullModelStream, waitForOllamaServer } from './ollama';
 import type { InstallLogger } from './logger';
 import { getArch, getTargetOS } from './platform';
-import { InstallEvent, InstallOptions, ProbeResult, StepName } from './types';
+import type { InstallEvent, InstallOptions, ProbeResult, StepName } from '../../shared/types';
 
 export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
   const os = getTargetOS();
@@ -43,7 +44,7 @@ async function pullModels(
   const failed: string[] = [];
   for (const model of models) {
     if (signal?.aborted) break;
-    emit({ type: 'log', level: 'info', message: `Pulling ${model}`, timestamp: new Date().toISOString() });
+    emit(logEvent(`Pulling ${model}`));
     try {
       await pullModelStream(
         model,
@@ -51,7 +52,7 @@ async function pullModels(
         (p) => emit({ type: 'progress', step: 'Models', label: `${model}: ${p.status}`, completed: p.completed, total: p.total, percent: p.percent }),
         signal
       );
-      emit({ type: 'log', level: 'info', message: `Pulled ${model}`, timestamp: new Date().toISOString() });
+      emit(logEvent(`Pulled ${model}`));
     } catch (err) {
       if (signal?.aborted) break;
       report(toErrorReport(err, `Models: ${model}`));
@@ -81,7 +82,7 @@ export async function runInstall(
   const report = (r: ErrorReport) => {
     reports.push(r);
     logger?.failure(r);
-    emit({ type: 'log', level: 'error', message: r.hint ? `${r.step}: ${r.summary} (${r.hint})` : `${r.step}: ${r.summary}`, timestamp: new Date().toISOString() });
+    emit(logEvent(r.hint ? `${r.step}: ${r.summary} (${r.hint})` : `${r.step}: ${r.summary}`, 'error'));
   };
 
   /** Runs one step, turning errors into FAILED and an abort into "cancelled". */
@@ -125,7 +126,7 @@ export async function runInstall(
 
   await runStep('Models', options.models.length === 0 ? 'skipped' : null, async () => {
     if (options.dryRun) {
-      forward({ type: 'log', level: 'info', message: `[dry-run] Would pull: ${options.models.join(', ')}`, timestamp: new Date().toISOString() });
+      forward(logEvent(`[dry-run] Would pull: ${options.models.join(', ')}`));
       return 'would pull';
     }
     const failed = await pullModels(options.models, forward, report, signal);

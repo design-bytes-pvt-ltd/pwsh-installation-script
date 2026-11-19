@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { defaultLogDir, describeOptions, describeSystem, fileStamp, InstallLogger, pruneOldLogs } from './core/logger';
 import { probeSystem, runInstall } from './core/orchestrator';
-import { InstallOptions } from './core/types';
+import type { InstallOptions } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
 let activeController: AbortController | null = null;

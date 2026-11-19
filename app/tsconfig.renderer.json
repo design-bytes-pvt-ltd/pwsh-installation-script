@@ -5,6 +5,9 @@
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "outDir": "dist/renderer",
+    // Explicit, so src/shared is inside it even when src/renderer/tsconfig.json (whose folder
+    // would otherwise be the default rootDir) extends this file.
+    "rootDir": "src",
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true

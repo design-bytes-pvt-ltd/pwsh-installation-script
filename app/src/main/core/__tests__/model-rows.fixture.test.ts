@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { computeModelBudget, GpuInfo, parseNvidiaSmiOutput, parseRocmSmiJson } from '../hardware';
 import { buildModelRows } from '../models';
-import { InstalledModelInfo, ModelBudget, ModelCatalogEntry } from '../types';
+import type { InstalledModelInfo, ModelBudget, ModelCatalogEntry } from '../../../shared/types';
 
 // Expected model rows, tiers, defaults and budgets for edge-case inputs.
 const fixturePath = path.join(__dirname, 'fixtures', 'model-rows.json');

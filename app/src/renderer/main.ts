@@ -1,5 +1,5 @@
-import type { InstallerApi } from '../main/preload';
-import type { InstallEvent, ModelRow, ProbeResult } from '../main/core/types';
+import type { InstallerApi } from '../shared/api';
+import type { InstallEvent, ModelRow, ProbeResult } from '../shared/types';
 
 declare global {
   interface Window {

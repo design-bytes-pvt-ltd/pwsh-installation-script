@@ -12,7 +12,7 @@ import {
   toErrorReport,
 } from './errors';
 import { getOsRelease, getTargetOS, isWindowsArm64 } from './platform';
-import { InstallEvent, InstallOptions } from './types';
+import type { InstallEvent, InstallOptions } from '../../shared/types';
 
 /** Log folder name; matches the packaged app's productName. */
 export const LOG_DIR_NAME = 'Docker + Ollama Installer';

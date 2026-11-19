@@ -1,15 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { InstallEvent, InstallOptions, ProbeResult } from './core/types';
-
-export interface InstallerApi {
-  probe: () => Promise<ProbeResult>;
-  startInstall: (options: InstallOptions) => Promise<void>;
-  cancelInstall: () => Promise<void>;
-  showLog: () => Promise<void>;
-  copyErrorReport: () => Promise<boolean>;
-  reportError: (error: { message: string; stack?: string; source?: string }) => Promise<void>;
-  onEvent: (callback: (event: InstallEvent) => void) => () => void;
-}
+// Type-only imports: a sandboxed preload cannot require local modules at runtime.
+import type { InstallerApi } from '../shared/api';
+import type { InstallEvent } from '../shared/types';
 
 const api: InstallerApi = {
   probe: () => ipcRenderer.invoke('system:probe'),

@@ -6,7 +6,8 @@ import { computeModelBudget, parseNvidiaSmiOutput, parseRocmSmiJson } from '../h
 import { buildModelRows, getModelMinMemory, getModelTier, getOllamaBaseUrl, loadModelCatalog, normalizeModelKey } from '../models';
 import { buildEngineScript, buildWindowsDockerScript } from '../docker';
 import { parsePullLine } from '../ollama';
-import { getTargetUser, isWindowsArm64, LineSplitter, parseOsRelease, quoteAppleScript, quotePs, quoteSh } from '../platform';
+import { LineSplitter } from '../exec';
+import { getTargetUser, isWindowsArm64, parseOsRelease, quoteAppleScript, quotePs, quoteSh } from '../platform';
 
 describe('hardware', () => {
   it('parses nvidia-smi MiB output into GB', () => {

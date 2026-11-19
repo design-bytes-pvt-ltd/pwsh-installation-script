@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CommandError, findHint, stackFrames, toErrorReport, whereFromStack } from '../errors';
-import { execCommand, ScriptMarkers, SH_PREAMBLE } from '../platform';
+import { ScriptMarkers, SH_PREAMBLE } from '../elevation';
+import { execCommand } from '../exec';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
