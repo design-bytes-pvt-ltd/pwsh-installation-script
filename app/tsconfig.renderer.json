@@ -4,13 +4,19 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
     "outDir": "dist/renderer",
     // Explicit, so src/shared is inside it even when src/renderer/tsconfig.json (whose folder
     // would otherwise be the default rootDir) extends this file.
     "rootDir": "src",
     "strict": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    // `@/` = src/renderer (resolved relative to this file). Mirrored in vite.config.ts and
+    // vitest.config.ts, and used by shadcn/ui (components.json).
+    "paths": {
+      "@/*": ["./src/renderer/*"]
+    }
   },
-  "include": ["src/renderer/**/*.ts"]
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx"]
 }
