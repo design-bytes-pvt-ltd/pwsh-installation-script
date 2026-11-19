@@ -11,7 +11,9 @@ export function App() {
 
   return (
     <AppLayout sidebar={<Typography>hello</Typography>}>
-      <Typography>world</Typography>
+      <div className="flex flex-col flex-1 items-start px-[48px] py-[26px]">
+        <Typography>world</Typography>
+      </div>
     </AppLayout>
   );
 }

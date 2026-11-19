@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { AppStoreProvider, useAppState, type AppState } from '@/store';
 import { installFakeInstallerApi, sampleProbe, type FakeInstaller } from '@/test/fakeInstallerApi';
+import { APP_VERSION } from '@/lib/version';
 import { App } from '../App';
 
 let fake: FakeInstaller;
@@ -32,7 +33,7 @@ describe('App', () => {
     renderApp();
     const sidebar = screen.getByRole('complementary');
     const content = screen.getByRole('main');
-    expect(sidebar.textContent).toBe('hello');
+    expect(sidebar.textContent).toBe(`helloVersion: ${APP_VERSION}`);
     expect(sidebar.className).toContain('bg-sidebar');
     expect(content.textContent).toBe('world');
     expect(content.className).toContain('bg-background');
