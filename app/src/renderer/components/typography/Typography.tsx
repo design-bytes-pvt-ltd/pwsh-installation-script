@@ -9,10 +9,10 @@ import { cn } from '@/lib/utils';
 const typographyVariants = cva('', {
   variants: {
     variant: {
-      h1: 'text-3xl leading-tight font-semibold tracking-tight',
-      h2: 'text-2xl leading-tight font-semibold tracking-tight',
-      h3: 'text-lg leading-snug font-semibold',
-      body: 'text-base leading-relaxed',
+      h1: 'text-[28px] leading-tight font-medium tracking-tight',
+      h2: 'text-2xl leading-tight font-medium tracking-tight',
+      h3: 'text-lg leading-snug font-medium',
+      body: 'text-base font-normal leading-relaxed',
       small: 'text-sm leading-normal',
       caption: 'text-xs leading-normal',
     },

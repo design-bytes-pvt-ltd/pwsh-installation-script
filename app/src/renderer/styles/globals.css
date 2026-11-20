@@ -36,6 +36,8 @@
     --color-stepper-complete-foreground: var(--stepper-complete-foreground);
     --color-stepper-connector-complete: var(--stepper-connector-complete);
     --color-stepper-active-foreground: var(--stepper-active-foreground);
+    --color-icon-badge: var(--icon-badge);
+    --color-icon-badge-foreground: var(--icon-badge-foreground);
     --color-success: var(--success);
     --color-success-foreground: var(--success-foreground);
     --color-warning: var(--warning);
@@ -99,8 +101,10 @@
     --palette-sage-300: #cfd9d4;
     --palette-sage-500: #8b9893;
     --palette-sage-900: #2e3d38;
+    --palette-sage-950: #10211b;
 
     /* Brand green: the primary button gradient runs from 500 to 700 */
+    --palette-brand-green-50: #e3f4ec;
     --palette-brand-green-300: #c8ffe6;
     --palette-brand-green-500: #329c79;
     --palette-brand-green-600: #288862;
@@ -134,11 +138,12 @@
 /* Light theme (the one the app uses) */
 :root {
     --background: var(--palette-white);
-    --foreground: var(--palette-neutral-950);
+    /* Default text: dark green-black, not pure black */
+    --foreground: var(--palette-sage-950);
     --card: var(--palette-white);
-    --card-foreground: var(--palette-neutral-950);
+    --card-foreground: var(--palette-sage-950);
     --popover: var(--palette-white);
-    --popover-foreground: var(--palette-neutral-950);
+    --popover-foreground: var(--palette-sage-950);
     --primary: var(--palette-neutral-900);
     --primary-foreground: var(--palette-neutral-50);
     --secondary: var(--palette-neutral-100);
@@ -168,6 +173,9 @@
     --stepper-complete-foreground: var(--palette-brand-green-300);
     --stepper-connector-complete: var(--palette-brand-green-600);
     --stepper-active-foreground: var(--palette-brand-green-900);
+    /* Round icon badge on light surfaces (e.g. the feature list on the Get ready page) */
+    --icon-badge: var(--palette-brand-green-50);
+    --icon-badge-foreground: var(--palette-brand-green-700);
     --success: var(--palette-green-600);
     --success-foreground: var(--palette-neutral-50);
     --warning: var(--palette-yellow-500);

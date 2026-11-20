@@ -46,7 +46,7 @@ describe('App', () => {
     expect(activeStep()?.textContent).toContain('Get ready');
 
     expect(content.className).toContain('bg-background');
-    expect(within(content).getByText('world')).toBeTruthy();
+    expect(within(content).getByRole('heading', { name: 'Welcome to Enterprise Brain' })).toBeTruthy();
     expect(within(content).getByText('Takes about 30 minutes')).toBeTruthy();
     expect(within(content).getByRole('button', { name: 'Get Started' })).toBeTruthy();
   });
@@ -57,9 +57,9 @@ describe('App', () => {
 
     expect(activeStep()?.textContent).toContain('Install');
     const content = screen.getByRole('main');
-    expect(within(content).queryByText('world')).toBeNull();
+    expect(within(content).queryByRole('heading', { name: 'Welcome to Enterprise Brain' })).toBeNull();
     expect(within(content).getByText('Installing…')).toBeTruthy();
-    expect(within(content).getByText('This can take a while')).toBeTruthy();
+    expect(within(content).getByText("Please don't turn off your computer")).toBeTruthy();
 
     fireEvent.click(within(content).getByRole('button', { name: 'Continue' }));
     expect(activeStep()?.textContent).toContain('Finish');

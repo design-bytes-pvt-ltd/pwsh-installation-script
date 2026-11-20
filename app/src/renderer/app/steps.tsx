@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from 'react';
 import type { StepperStep } from '@/components/stepper';
-import { Typography } from '@/components/typography';
+import { FinishPage, GetReadyPage, InstallPage } from '@/pages';
 
 /**
  * Everything that changes with the active step: its sidebar entry, the content area and the footer.
@@ -15,17 +15,12 @@ type AppStep = StepperStep & {
   actionLabel: string;
 };
 
-// Placeholder screens until the real ones are built.
-const GetReadyContent = () => <Typography>Start</Typography>;
-const InstallContent = () => <Typography>Installing…</Typography>;
-const FinishContent = () => <Typography>All set.</Typography>;
-
 export const STEPS = [
   {
     id: 'get-ready',
     title: 'Get ready',
     description: 'Check your PC',
-    Content: GetReadyContent,
+    Content: GetReadyPage,
     footerNote: 'Takes about 30 minutes',
     actionLabel: 'Get Started',
   },
@@ -33,7 +28,7 @@ export const STEPS = [
     id: 'install',
     title: 'Install',
     description: 'Set up the app',
-    Content: InstallContent,
+    Content: InstallPage,
     footerNote: 'Please don\'t turn off your computer',
     actionLabel: 'Continue',
   },
@@ -41,7 +36,7 @@ export const STEPS = [
     id: 'finish',
     title: 'Finish',
     description: 'Open and go',
-    Content: FinishContent,
+    Content: FinishPage,
     footerNote: 'Everything is ready',
     actionLabel: 'Launch Enterprise Brain',
   },
