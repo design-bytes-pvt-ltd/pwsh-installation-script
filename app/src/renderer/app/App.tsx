@@ -31,12 +31,12 @@ export function App() {
       sidebar={<SidebarContent stepId={stepId} />}
       footer={
         <>
-          <Typography font="secondary" variant="caption" className="text-subtle-foreground">
+          <Typography variant="caption" className="text-subtle-foreground">
             {step.footerNote}
           </Typography>
           <div className="flex flex-row items-center gap-2">
             {/* TODO: the last step has no next step yet; wire its action (e.g. launch the app). */}
-            <Button onClick={next ? () => setStepId(next.id) : undefined}>{step.actionLabel}</Button>
+            <Button onClick={() => setStepId(next?.id ?? STEPS[0].id)}>{step.actionLabel}</Button>
           </div>
         </>
       }

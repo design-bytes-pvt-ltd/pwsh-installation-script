@@ -16,7 +16,7 @@ type AppStep = StepperStep & {
 };
 
 // Placeholder screens until the real ones are built.
-const GetReadyContent = () => <Typography>world</Typography>;
+const GetReadyContent = () => <Typography>Start</Typography>;
 const InstallContent = () => <Typography>Installing…</Typography>;
 const FinishContent = () => <Typography>All set.</Typography>;
 
@@ -34,7 +34,7 @@ export const STEPS = [
     title: 'Install',
     description: 'Set up the app',
     Content: InstallContent,
-    footerNote: 'This can take a while',
+    footerNote: 'Please don\'t turn off your computer',
     actionLabel: 'Continue',
   },
   {

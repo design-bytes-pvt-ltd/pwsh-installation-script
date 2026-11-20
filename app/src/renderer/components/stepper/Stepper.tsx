@@ -137,7 +137,9 @@ function Stepper<T extends string>({ steps, value, className, ...props }: Steppe
                   <span className="sr-only">Completed:</span>
                 </>
               ) : (
-                <span aria-hidden>{index + 1}</span>
+                <Typography variant="caption" font="secondary" aria-hidden>
+                  {index + 1}
+                </Typography>
               )}
             </span>
 
