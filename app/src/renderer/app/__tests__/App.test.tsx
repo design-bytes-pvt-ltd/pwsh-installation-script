@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { AppStoreProvider, useAppState, type AppState } from '@/store';
 import { installFakeInstallerApi, sampleProbe, type FakeInstaller } from '@/test/fakeInstallerApi';
@@ -29,14 +29,42 @@ const renderApp = () =>
   );
 
 describe('App', () => {
-  test('renders the sidebar and content layout', () => {
+  const activeStep = () =>
+    within(screen.getByRole('complementary'))
+      .getAllByRole('listitem')
+      .find((li) => li.getAttribute('aria-current') === 'step');
+
+  test('renders the sidebar and content layout on the first step', () => {
     renderApp();
     const sidebar = screen.getByRole('complementary');
     const content = screen.getByRole('main');
-    expect(sidebar.textContent).toBe(`helloVersion: ${APP_VERSION}`);
     expect(sidebar.className).toContain('bg-sidebar');
-    expect(content.textContent).toBe('world');
+    expect(sidebar.textContent).toContain(`Version: ${APP_VERSION}`);
+    for (const title of ['Get ready', 'Install', 'Finish']) {
+      expect(within(sidebar).getByText(title)).toBeTruthy();
+    }
+    expect(activeStep()?.textContent).toContain('Get ready');
+
     expect(content.className).toContain('bg-background');
+    expect(within(content).getByText('world')).toBeTruthy();
+    expect(within(content).getByText('Takes about 30 minutes')).toBeTruthy();
+    expect(within(content).getByRole('button', { name: 'Get Started' })).toBeTruthy();
+  });
+
+  test('the footer button moves to the next step, updating stepper, content and footer', () => {
+    renderApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Get Started' }));
+
+    expect(activeStep()?.textContent).toContain('Install');
+    const content = screen.getByRole('main');
+    expect(within(content).queryByText('world')).toBeNull();
+    expect(within(content).getByText('Installing…')).toBeTruthy();
+    expect(within(content).getByText('This can take a while')).toBeTruthy();
+
+    fireEvent.click(within(content).getByRole('button', { name: 'Continue' }));
+    expect(activeStep()?.textContent).toContain('Finish');
+    expect(within(content).getByText('All set.')).toBeTruthy();
+    expect(within(content).getByRole('button', { name: 'Launch Enterprise Brain' })).toBeTruthy();
   });
 
   test('probes the system on launch and selects the default models', async () => {

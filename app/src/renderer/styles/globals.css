@@ -25,6 +25,17 @@
     --color-chart-2: var(--chart-2);
     --color-chart-1: var(--chart-1);
     --color-ring: var(--ring);
+    --color-button-primary-from: var(--button-primary-from);
+    --color-button-primary-to: var(--button-primary-to);
+    --color-button-primary-foreground: var(--button-primary-foreground);
+    --color-button-secondary: var(--button-secondary);
+    --color-button-secondary-hover: var(--button-secondary-hover);
+    --color-button-secondary-border: var(--button-secondary-border);
+    --color-button-secondary-foreground: var(--button-secondary-foreground);
+    --color-stepper-complete: var(--stepper-complete);
+    --color-stepper-complete-foreground: var(--stepper-complete-foreground);
+    --color-stepper-connector-complete: var(--stepper-connector-complete);
+    --color-stepper-active-foreground: var(--stepper-active-foreground);
     --color-success: var(--success);
     --color-success-foreground: var(--success-foreground);
     --color-warning: var(--warning);
@@ -83,8 +94,19 @@
     --palette-black: oklch(0 0 0);
 
     /* Sage: green-tinted greys used by the content area */
+    --palette-sage-50: #f3f5f4;
     --palette-sage-100: #e6ece9;
+    --palette-sage-300: #cfd9d4;
     --palette-sage-500: #8b9893;
+    --palette-sage-900: #2e3d38;
+
+    /* Brand green: the primary button gradient runs from 500 to 700 */
+    --palette-brand-green-300: #c8ffe6;
+    --palette-brand-green-500: #329c79;
+    --palette-brand-green-600: #288862;
+    --palette-brand-green-700: #256257;
+    --palette-brand-green-800: #1a4c3a;
+    --palette-brand-green-900: #0f4034;
 
     /* Slate (Tailwind v3), used by the dark theme */
     --palette-slate-50: #f8fafc;
@@ -133,6 +155,19 @@
     --input: var(--palette-neutral-200);
     --ring: var(--palette-neutral-400);
     --log: color-mix(in oklab, var(--palette-black) 30%, transparent);
+    /* Buttons (components/button). Not overridden in .dark, so both themes share them. */
+    --button-primary-from: var(--palette-brand-green-500);
+    --button-primary-to: var(--palette-brand-green-700);
+    --button-primary-foreground: var(--palette-white);
+    --button-secondary: var(--palette-white);
+    --button-secondary-hover: var(--palette-sage-50);
+    --button-secondary-border: var(--palette-sage-300);
+    --button-secondary-foreground: var(--palette-sage-900);
+    /* Stepper (components/stepper). Its greys are --sidebar-foreground at reduced opacity. */
+    --stepper-complete: var(--palette-brand-green-800);
+    --stepper-complete-foreground: var(--palette-brand-green-300);
+    --stepper-connector-complete: var(--palette-brand-green-600);
+    --stepper-active-foreground: var(--palette-brand-green-900);
     --success: var(--palette-green-600);
     --success-foreground: var(--palette-neutral-50);
     --warning: var(--palette-yellow-500);
