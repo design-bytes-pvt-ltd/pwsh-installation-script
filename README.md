@@ -57,6 +57,30 @@ To add a model, add an entry to `models.json`:
 
 `name` is the Ollama tag and is the only required field. `size_gb` is the download size. `min_memory_gb` is the memory needed to run the model comfortably. If you leave it out, the app estimates it as `size_gb × 1.2 + 1`, rounded up. CI checks `models.json` against [`models.schema.json`](models.schema.json).
 
+## Launch link
+
+"Launch Enterprise Brain" on the Finish step opens `launchUrl` from `app-config.json` (repo root, bundled with the
+app) in the default browser. Only `http`/`https` links are used; anything else falls back to `https://google.com`.
+During development, `ENTERPRISE_BRAIN_URL` overrides the file. In an installed app the file is read on each click,
+so it can be changed in the app's resources folder without a rebuild.
+
+## Dev container (ghcr.io)
+
+After Docker, the installer starts the dev container defined in `containers/docker-compose.yml`
+(`ghcr.io/design-bytes-pvt-ltd/ubuntu-nix-hm:latest`). It starts Docker Desktop if needed, waits up to
+3 minutes for it, signs in to ghcr.io, then runs `docker compose -p enterprise-brain pull` and `up -d`.
+
+The image is private. The installer signs in with a read-only bot token:
+
+- **Release builds:** write `ghcr-credentials.json` at the repo root before `npm run dist` (for example from CI
+  secrets). It is gitignored and bundled through `extraResources`; see `ghcr-credentials.example.json`. Use a token
+  with only the `read:packages` scope: anyone with the installer can extract it.
+- **Development:** export `GHCR_USERNAME` and `GHCR_TOKEN`, or create the same file.
+- **No credentials:** the step relies on an existing `docker login ghcr.io` on that computer.
+
+The token is passed to `docker login` on stdin and masked in logs and error reports. Docker keeps the login,
+so later `docker compose pull` updates work without signing in again.
+
 ## Logs
 Only the 10 newest logs are kept.
 
