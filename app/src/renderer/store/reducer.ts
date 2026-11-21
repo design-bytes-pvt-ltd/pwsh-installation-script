@@ -3,7 +3,7 @@ import type { InstallEvent, ProbeResult, StepName, StepStatus } from '../../shar
 export type Screen = 'configure' | 'progress' | 'summary';
 export type SummaryEvent = Extract<InstallEvent, { type: 'summary' }>;
 
-export const STEP_NAMES: readonly StepName[] = ['Ollama', 'Models', 'Docker'];
+export const STEP_NAMES: readonly StepName[] = ['Ollama', 'Models', 'Docker', 'Containers'];
 
 export interface StepState {
   status: StepStatus | 'pending';
@@ -28,6 +28,8 @@ export interface InstallState {
   running: boolean;
   /** True once Cancel was pressed for this run. Disables Cancel. */
   cancelling: boolean;
+  /** Set when the run could not start at all (no summary will arrive). */
+  startError: string | null;
   summary: SummaryEvent | null;
 }
 
@@ -43,6 +45,8 @@ export interface AppState {
 }
 
 export type Action =
+  /** A probe is starting: clears the last error so the UI shows "checking" again. */
+  | { type: 'probeStarted' }
   | { type: 'probeLoaded'; probe: ProbeResult }
   | { type: 'probeFailed'; message: string }
   | { type: 'modelToggled'; name: string; selected: boolean }
@@ -58,12 +62,13 @@ export type Action =
 
 function freshInstall(): InstallState {
   return {
-    steps: { Ollama: { status: 'pending' }, Models: { status: 'pending' }, Docker: { status: 'pending' } },
+    steps: { Ollama: { status: 'pending' }, Models: { status: 'pending' }, Docker: { status: 'pending' }, Containers: { status: 'pending' } },
     progressLabel: 'Preparing...',
     percent: 0,
     logLines: [],
     running: false,
     cancelling: false,
+    startError: null,
     summary: null,
   };
 }
@@ -113,6 +118,8 @@ function applyInstallEvent(state: AppState, event: InstallEvent): AppState {
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
+    case 'probeStarted':
+      return { ...state, probeError: null };
     case 'probeLoaded':
       return { ...state, probe: action.probe, probeError: null, selectedModels: defaultSelection(action.probe) };
     case 'probeFailed':
@@ -134,7 +141,10 @@ export function reducer(state: AppState, action: Action): AppState {
         install: { ...freshInstall(), progressLabel: 'Starting setup...', running: true },
       };
     case 'installStartFailed':
-      return { ...state, install: { ...state.install, progressLabel: `Could not start: ${action.message}` } };
+      return {
+        ...state,
+        install: { ...state.install, progressLabel: `Could not start: ${action.message}`, startError: action.message },
+      };
     case 'installSettled':
       return { ...state, install: { ...state.install, running: false } };
     case 'cancelRequested':

@@ -1,2 +1,3 @@
 export { systemBanner } from './banner';
-export { useProbe } from './useProbe';
+export { diskTooLow, everythingInstalled, requirementsStatus, type RequirementsStatus } from './checks';
+export { MIN_REQUIREMENTS_CHECK_MS, useProbe, useReprobe } from './useProbe';

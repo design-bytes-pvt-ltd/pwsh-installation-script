@@ -1,0 +1,26 @@
+# Dev container started by the installer after Docker is installed (Install page, "Containers" step).
+# The installer runs: docker compose -f <this file> -p enterprise-brain pull && ... up -d
+name: enterprise-brain
+
+services:
+  devbox:
+    image: ghcr.io/design-bytes-pvt-ltd/ubuntu-nix-hm:latest
+    # The image is published for amd64 only; Apple Silicon runs it under emulation.
+    platform: linux/amd64
+    container_name: ubuntu-nix-hm
+    restart: unless-stopped
+    init: true
+    # The image's default command is `bash`, which exits at once without a terminal.
+    command: ["sleep", "infinity"]
+    environment:
+      # Ollama runs on the host, not in a container.
+      OLLAMA_HOST: http://host.docker.internal:11434
+    extra_hosts:
+      # Docker Desktop defines host.docker.internal itself; Docker Engine on Linux needs this.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Only the workspace persists: keeping all of $HOME would pin stale home-manager links across image updates.
+      - devbox-workspace:/home/db-gmktec/workspace
+
+volumes:
+  devbox-workspace:

@@ -1,8 +1,9 @@
+import { detectDevContainer, startContainers } from './containers';
 import { detectDocker, installDocker } from './docker';
 import { ErrorReport, ReportedError, toErrorReport } from './errors';
 import { logEvent } from './events';
-import { getModelBudget } from './hardware';
-import { buildModelRows, getInstalledModels, getOllamaBaseUrl, loadModelCatalog } from './models';
+import { getDiskInfo, getModelBudget } from './hardware';
+import { buildModelRows, getInstalledModels, getOllamaBaseUrl, loadModelCatalog, normalizeModelKey } from './models';
 import { getOllamaExe, installOllama, pullModelStream, waitForOllamaServer } from './ollama';
 import type { InstallLogger } from './logger';
 import { getArch, getTargetOS } from './platform';
@@ -12,8 +13,10 @@ export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
   const os = getTargetOS();
   const arch = await getArch(os);
   const budget = await getModelBudget(os);
+  const disk = await getDiskInfo(os);
   const ollamaPath = await getOllamaExe(os);
   const dockerInstalled = await detectDocker(os);
+  const devContainer = await detectDevContainer(dockerInstalled, os);
   const catalog = loadModelCatalog(catalogPath);
   const installed = await getInstalledModels(getOllamaBaseUrl(), os);
   const models = buildModelRows(catalog, installed, budget);
@@ -22,28 +25,43 @@ export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
     os,
     arch,
     budget,
+    disk,
     ollamaInstalled: Boolean(ollamaPath),
     ollamaPath,
     dockerInstalled,
+    devContainer,
     models,
   };
 }
 
-/** Pulls each model, continuing past failures. Each failure gets its own report. Returns the names that failed. */
-async function pullModels(
+export interface PullResult {
+  pulled: string[];
+  /** Already downloaded, so not pulled again. */
+  skipped: string[];
+  failed: string[];
+}
+
+/**
+ * Pulls each model that is not downloaded yet, continuing past failures. Each failure gets its own
+ * report. Expects the Ollama server at `baseUrl` to be running.
+ */
+export async function pullMissingModels(
   models: string[],
+  baseUrl: string,
   emit: (event: InstallEvent) => void,
   report: (r: ErrorReport) => void,
   signal?: AbortSignal
-): Promise<string[]> {
-  const exe = await getOllamaExe();
-  if (!exe) throw new Error('Ollama is not installed; cannot pull models.');
-  const baseUrl = getOllamaBaseUrl();
-  await waitForOllamaServer(exe, baseUrl, emit, signal);
-
-  const failed: string[] = [];
+): Promise<PullResult> {
+  // Checked here rather than trusting the probe, which may predate this run.
+  const installed = await getInstalledModels(baseUrl);
+  const result: PullResult = { pulled: [], skipped: [], failed: [] };
   for (const model of models) {
     if (signal?.aborted) break;
+    if (installed.has(normalizeModelKey(model))) {
+      emit(logEvent(`${model} is already downloaded; not pulling it again`));
+      result.skipped.push(model);
+      continue;
+    }
     emit(logEvent(`Pulling ${model}`));
     try {
       await pullModelStream(
@@ -53,20 +71,30 @@ async function pullModels(
         signal
       );
       emit(logEvent(`Pulled ${model}`));
+      result.pulled.push(model);
     } catch (err) {
       if (signal?.aborted) break;
       report(toErrorReport(err, `Models: ${model}`));
-      failed.push(model);
+      result.failed.push(model);
     }
   }
-  return failed;
+  return result;
+}
+
+/** Files bundled with the app that the install reads. Resolved by the main process, never the renderer. */
+export interface InstallResources {
+  /** docker-compose.yml for the dev containers. */
+  composePath: string;
+  /** Candidate ghcr.io credential files, tried in order. */
+  credentialFiles: string[];
 }
 
 export async function runInstall(
   options: InstallOptions,
   emit: (event: InstallEvent) => void,
   signal?: AbortSignal,
-  logger?: InstallLogger
+  logger?: InstallLogger,
+  resources?: InstallResources
 ): Promise<void> {
   const results: Record<string, string> = {};
   const notes: string[] = [];
@@ -129,13 +157,27 @@ export async function runInstall(
       forward(logEvent(`[dry-run] Would pull: ${options.models.join(', ')}`));
       return 'would pull';
     }
-    const failed = await pullModels(options.models, forward, report, signal);
+    const exe = await getOllamaExe();
+    if (!exe) throw new Error('Ollama is not installed; cannot pull models.');
+    const baseUrl = getOllamaBaseUrl();
+    await waitForOllamaServer(exe, baseUrl, forward, signal);
+    const { pulled, failed } = await pullMissingModels(options.models, baseUrl, forward, report, signal);
     if (failed.length > 0) throw new ReportedError(`Failed to pull: ${failed.join(', ')}`);
-    return 'pulled';
+    return pulled.length > 0 ? 'pulled' : 'already present';
   });
 
   await runStep('Docker', options.installDocker ? null : 'skipped', () =>
     installDocker({ dockerEngineOnLinux: options.dockerEngineOnLinux, dryRun: options.dryRun, signal, emit: forward })
+  );
+
+  await runStep('Containers', await containersSkipReason(options, results.Docker, resources), () =>
+    startContainers({
+      composePath: resources!.composePath,
+      credentialFiles: resources!.credentialFiles,
+      dryRun: options.dryRun,
+      signal,
+      emit: forward,
+    })
   );
 
   const cancelled = Boolean(signal?.aborted);
@@ -149,4 +191,17 @@ export async function runInstall(
     logPath: logger?.filePath,
     failures: reports.map((r) => ({ step: r.step, summary: r.summary, hint: r.hint })),
   });
+}
+
+/** Why the Containers step can't run (shown as the skip detail), or null when it should run. */
+async function containersSkipReason(
+  options: InstallOptions,
+  dockerResult: string | undefined,
+  resources: InstallResources | undefined
+): Promise<string | null> {
+  if (!resources) return 'no container definition bundled';
+  if (dockerResult === 'cancelled' || dockerResult?.startsWith('FAILED:')) return "Docker isn't ready";
+  // A dry run doesn't install Docker, so only a real run can require it to be present.
+  if (!options.dryRun && (await detectDocker()) === 'none') return "Docker isn't installed";
+  return null;
 }

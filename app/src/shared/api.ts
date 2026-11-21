@@ -8,5 +8,7 @@ export interface InstallerApi {
   showLog: () => Promise<void>;
   copyErrorReport: () => Promise<boolean>;
   reportError: (error: { message: string; stack?: string; source?: string }) => Promise<void>;
+  /** Opens Enterprise Brain (the configured launch URL) in the default browser. */
+  launchApp: () => Promise<void>;
   onEvent: (callback: (event: InstallEvent) => void) => () => void;
 }

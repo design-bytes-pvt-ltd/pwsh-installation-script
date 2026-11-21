@@ -19,9 +19,11 @@ export const sampleProbe: ProbeResult = {
   os: 'linux',
   arch: 'amd64',
   budget: { budgetGB: 12, ramGB: 16, source: '16 GB RAM' },
+  disk: { path: '/home/u', freeGB: 120, requiredGB: 60 },
   ollamaInstalled: true,
   ollamaPath: '/usr/bin/ollama',
   dockerInstalled: 'none',
+  devContainer: 'missing',
   models: [
     modelRow('llama3', { isDefault: true, sizeGB: 4.7 }),
     modelRow('tiny', { sizeGB: 0.5 }),
@@ -50,6 +52,7 @@ export function installFakeInstallerApi(probe: ProbeResult = sampleProbe): FakeI
     showLog: vi.fn().mockResolvedValue(undefined),
     copyErrorReport: vi.fn().mockResolvedValue(true),
     reportError: vi.fn().mockResolvedValue(undefined),
+    launchApp: vi.fn().mockResolvedValue(undefined),
     onEvent: vi.fn((cb: (e: InstallEvent) => void) => {
       listeners.add(cb);
       return () => listeners.delete(cb);

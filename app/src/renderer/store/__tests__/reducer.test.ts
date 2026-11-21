@@ -16,9 +16,11 @@ const probe: ProbeResult = {
   os: 'linux',
   arch: 'amd64',
   budget: null,
+  disk: null,
   ollamaInstalled: false,
   ollamaPath: null,
   dockerInstalled: 'none',
+  devContainer: 'missing',
   models: [model('a', true), model('b', false), model('c', true)],
 };
 
@@ -35,6 +37,7 @@ describe('probe', () => {
     expect(failed.probe).toBe(probe);
     expect(failed.probeError).toBe('boom');
     expect(reducer(failed, { type: 'probeLoaded', probe }).probeError).toBeNull();
+    expect(reducer(failed, { type: 'probeStarted' }).probeError).toBeNull();
   });
 });
 
@@ -64,6 +67,7 @@ describe('install lifecycle', () => {
     expect(started.install.percent).toBe(0);
     expect(started.install.progressLabel).toBe('Starting setup...');
     expect(started.install.steps.Docker).toEqual({ status: 'pending' });
+    expect(started.install.steps.Containers).toEqual({ status: 'pending' });
   });
 
   test('events update steps, progress and logs', () => {

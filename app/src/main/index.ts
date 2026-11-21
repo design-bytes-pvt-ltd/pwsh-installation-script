@@ -1,8 +1,9 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadLaunchUrl } from './core/appConfig';
 import { defaultLogDir, describeOptions, describeSystem, fileStamp, InstallLogger, pruneOldLogs } from './core/logger';
-import { probeSystem, runInstall } from './core/orchestrator';
+import { type InstallResources, probeSystem, runInstall } from './core/orchestrator';
 import type { InstallOptions } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -80,11 +81,22 @@ function sanitizeRendererError(raw: unknown): Error {
 
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
-function resolveModelsPath(): string {
-  const packagedPath = path.join(process.resourcesPath, 'models.json');
+/** A file shipped via extraResources; in dev it is read from the repo root (__dirname is app/dist/main). */
+function resolveResourcePath(relativePath: string): string {
+  const packagedPath = path.join(process.resourcesPath, relativePath);
   if (app.isPackaged && fs.existsSync(packagedPath)) return packagedPath;
-  // Dev: __dirname is app/dist/main, and models.json sits at the repo root.
-  return path.resolve(__dirname, '../../../models.json');
+  return path.resolve(__dirname, '../../..', relativePath);
+}
+
+function resolveModelsPath(): string {
+  return resolveResourcePath('models.json');
+}
+
+/** The dev-container compose file and the ghcr.io credentials (packaged copy first, then the repo root in dev). */
+function resolveInstallResources(): InstallResources {
+  const credentialFiles = [path.resolve(__dirname, '../../../ghcr-credentials.json')];
+  if (app.isPackaged) credentialFiles.unshift(path.join(process.resourcesPath, 'ghcr-credentials.json'));
+  return { composePath: resolveResourcePath('containers/docker-compose.yml'), credentialFiles };
 }
 
 /** Rebuilds the options from untrusted IPC input instead of passing it through. */
@@ -162,7 +174,8 @@ app.whenReady().then(() => {
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('install:event', evt);
         },
         controller.signal,
-        logger
+        logger,
+        resolveInstallResources()
       );
     } catch (err) {
       // runInstall reports step failures itself; anything reaching here is a bug.
@@ -172,6 +185,11 @@ app.whenReady().then(() => {
       // Only clear the controller if it still belongs to this run.
       if (activeController === controller) activeController = null;
     }
+  });
+
+  // The renderer never passes the URL: it comes from app-config.json in the main process.
+  ipcMain.handle('app:launch', async () => {
+    await shell.openExternal(loadLaunchUrl(resolveResourcePath('app-config.json')));
   });
 
   ipcMain.handle('install:cancel', () => {

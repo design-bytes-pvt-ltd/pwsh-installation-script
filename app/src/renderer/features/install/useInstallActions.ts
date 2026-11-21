@@ -11,10 +11,14 @@ export function useInstallActions() {
   /** Start needs probe results and no run in progress. */
   const canStart = probe !== null && !install.running;
 
-  /** Starts an install with the current options and selection. Resolves when the run ends. */
-  const start = useCallback(async () => {
+  /**
+   * Starts an install with the current options. Resolves when the run ends.
+   * `models` overrides the selection (no "too large" confirmation: the caller chose them).
+   */
+  const start = useCallback(async (overrides: { models?: string[] } = {}) => {
     if (!probe) return;
-    const tooLarge = tooLargeSelected(probe.models, selectedModels);
+    const models = overrides.models ?? selectedModels;
+    const tooLarge = overrides.models ? [] : tooLargeSelected(probe.models, selectedModels);
     if (tooLarge.length > 0) {
       const ok = window.confirm(
         `The following models are tagged "too large" for this machine: ${tooLarge.map((m) => m.name).join(', ')}. Pull anyway?`
@@ -24,7 +28,7 @@ export function useInstallActions() {
 
     dispatch({ type: 'installStarting' });
     try {
-      await installerApi.startInstall({ ...options, models: [...selectedModels] });
+      await installerApi.startInstall({ ...options, models: [...models] });
     } catch (err) {
       dispatch({ type: 'installStartFailed', message: errorMessage(err) });
     } finally {

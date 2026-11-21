@@ -1,0 +1,79 @@
+name: Release
+
+# Builds the installers for macOS, Windows and Linux with the ghcr.io bot credentials bundled,
+# then publishes them as a GitHub release. Push a tag like v0.2.0 to release; run it by hand
+# (Actions -> Release -> Run workflow) to build the installers without publishing a release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # The dev-container step signs in to ghcr.io with these. Use a bot account whose token has
+      # only the read:packages scope: anyone with the installer can extract it.
+      - name: Write ghcr.io credentials
+        env:
+          GHCR_BOT_USERNAME: ${{ secrets.GHCR_BOT_USERNAME }}
+          GHCR_BOT_TOKEN: ${{ secrets.GHCR_BOT_TOKEN }}
+        run: |
+          if [ -z "$GHCR_BOT_USERNAME" ] || [ -z "$GHCR_BOT_TOKEN" ]; then
+            echo "::error::Set the GHCR_BOT_USERNAME and GHCR_BOT_TOKEN repository secrets (Settings -> Secrets and variables -> Actions)."
+            exit 1
+          fi
+          # JSON-encode through node so no character in the secrets can break the file.
+          node -e 'require("fs").writeFileSync("../ghcr-credentials.json", JSON.stringify({ username: process.env.GHCR_BOT_USERNAME, token: process.env.GHCR_BOT_TOKEN }))'
+
+      - name: Build installer
+        env:
+          # No signing certificates are configured yet; build unsigned instead of searching for one.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist -- --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            app/release/*.dmg
+            app/release/*.exe
+            app/release/*.AppImage
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

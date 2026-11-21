@@ -103,6 +103,21 @@ export const HINTS: Hint[] = [
     text: 'The administrator password prompt was cancelled or denied. Run the installer again and approve the prompt.',
   },
   {
+    id: 'registry-denied',
+    pattern: 'ghcr\\.io.{0,200}(unauthorized|denied)|(unauthorized|denied).{0,200}ghcr\\.io|error from registry: (denied|unauthorized)|incorrect username or password',
+    text: 'The container registry refused access. Ask an admin to grant your GitHub account access to the package, or check the bundled registry token, then click Retry.',
+  },
+  {
+    id: 'docker-permission',
+    pattern: 'permission denied while trying to connect to the docker|docker\\.sock.{0,80}permission denied|pipe/docker_engine.{0,80}Access is denied',
+    text: 'Your account cannot use Docker yet. Log out and back in (or restart the computer), then click Retry.',
+  },
+  {
+    id: 'docker-unreachable',
+    pattern: 'Docker did not become ready|Cannot connect to the Docker daemon|failed to connect to the docker API|Is the docker daemon running|docker daemon is not running|error during connect',
+    text: 'Docker is not running. Start Docker Desktop (restart the computer if Docker was just installed), then click Retry.',
+  },
+  {
     id: 'ollama-unreachable',
     pattern: 'Ollama server did not become reachable|Ollama is not running|(127\\.0\\.0\\.1|localhost):11434',
     text: "The Ollama server is not running. Start the Ollama app (or run 'ollama serve') and try again.",
@@ -167,6 +182,8 @@ const REDACTIONS: Array<[RegExp, string]> = [
   [/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1***:***@'],
   [/((?:password|passwd|token|secret|api[_-]?key)\s*[=:]\s*)[^\s&"']+/gi, '$1***'],
   [/(Authorization:\s*(?:Bearer\s+|Basic\s+)?)[^\s"']+/gi, '$1***'],
+  // GitHub tokens (registry logins): classic, OAuth, app and fine-grained.
+  [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '***'],
 ];
 
 /** Masks credentials that commands sometimes echo (URLs with user:pass, token=..., auth headers). */

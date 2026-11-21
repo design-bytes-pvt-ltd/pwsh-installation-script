@@ -10,6 +10,11 @@ export function selectionSummary(models: readonly ModelRow[], selected: readonly
   return `${selected.length} selected (${downloadSizeGB(models, selected).toFixed(1)} GB to download)`;
 }
 
+/** The model the installer pulls: the one the main process marked as the default for this machine. */
+export function recommendedModel(models: readonly ModelRow[]): ModelRow | null {
+  return models.find((m) => m.isDefault) ?? null;
+}
+
 /** Selected models tagged "too large" for this machine. */
 export function tooLargeSelected(models: readonly ModelRow[], selected: readonly string[]): ModelRow[] {
   const chosen = new Set(selected);

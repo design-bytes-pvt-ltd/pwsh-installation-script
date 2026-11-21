@@ -1,7 +1,11 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import { execCommand } from './exec';
 import { commandExists, getArch, getTargetOS } from './platform';
-import type { Arch, ModelBudget, TargetOS } from '../../shared/types';
+import type { Arch, DiskInfo, ModelBudget, TargetOS } from '../../shared/types';
+
+/** Free space Ollama, the model and Docker need, in GB. */
+export const REQUIRED_DISK_GB = 60;
 
 export interface GpuInfo {
   vendor: 'NVIDIA' | 'AMD';
@@ -105,4 +109,25 @@ export async function getModelBudget(targetOS: TargetOS = getTargetOS()): Promis
   const gpu = await getGpuMemoryGB(targetOS);
   const arch = await getArch(targetOS);
   return computeModelBudget(ramGB, gpu, targetOS, arch);
+}
+
+/** The folder whose drive gets Ollama, the models and Docker: the system drive on Windows, else home. */
+export function diskCheckPath(targetOS: TargetOS, env: NodeJS.ProcessEnv = process.env): string {
+  if (targetOS === 'windows') return `${env.SystemDrive || 'C:'}\\`;
+  return os.homedir();
+}
+
+/** Free space from a statfs result (space available to unprivileged users), rounded to 0.1 GB. */
+export function computeDiskInfo(stats: { bavail: number | bigint; bsize: number | bigint }, diskPath: string): DiskInfo {
+  const freeBytes = Number(stats.bavail) * Number(stats.bsize);
+  return { path: diskPath, freeGB: Math.round((freeBytes / (1024 ** 3)) * 10) / 10, requiredGB: REQUIRED_DISK_GB };
+}
+
+export async function getDiskInfo(targetOS: TargetOS = getTargetOS()): Promise<DiskInfo | null> {
+  const diskPath = diskCheckPath(targetOS);
+  try {
+    return computeDiskInfo(await fs.promises.statfs(diskPath), diskPath);
+  } catch {
+    return null;
+  }
 }

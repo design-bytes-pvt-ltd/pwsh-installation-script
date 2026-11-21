@@ -2,6 +2,8 @@ export type TargetOS = 'windows' | 'macos' | 'linux';
 export type Arch = 'amd64' | 'arm64';
 export type ModelTier = 'recommended' | 'may be slow' | 'too large' | '';
 export type DockerKind = 'desktop' | 'engine' | 'none';
+/** The dev container started by the install. `unknown`: Docker is installed but not reachable (e.g. not running). */
+export type DevContainerStatus = 'running' | 'stopped' | 'missing' | 'unknown';
 
 export interface ModelCatalogEntry {
   name: string;
@@ -31,13 +33,24 @@ export interface ModelRow {
   isDefault: boolean;
 }
 
+/** Free space on the drive the tools and models install to. */
+export interface DiskInfo {
+  /** The path that was measured (e.g. "C:\\" or the home folder). */
+  path: string;
+  freeGB: number;
+  requiredGB: number;
+}
+
 export interface ProbeResult {
   os: TargetOS;
   arch: Arch;
   budget: ModelBudget | null;
+  /** Null when free space could not be measured. */
+  disk: DiskInfo | null;
   ollamaInstalled: boolean;
   ollamaPath: string | null;
   dockerInstalled: DockerKind;
+  devContainer: DevContainerStatus;
   models: ModelRow[];
 }
 
@@ -50,7 +63,7 @@ export interface InstallOptions {
   dryRun?: boolean;
 }
 
-export type StepName = 'Ollama' | 'Models' | 'Docker';
+export type StepName = 'Ollama' | 'Models' | 'Docker' | 'Containers';
 
 /** Short form of a failure report, for the summary screen. */
 export interface FailureSummary {

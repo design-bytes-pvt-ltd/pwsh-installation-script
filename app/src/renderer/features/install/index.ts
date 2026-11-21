@@ -2,6 +2,7 @@ export { FailureList } from './components/FailureList';
 export { InstallOptions } from './components/InstallOptions';
 export { LogViewer } from './components/LogViewer';
 export { ResultList } from './components/ResultList';
+export { StatusRow } from './components/StatusRow';
 export { StepList } from './components/StepList';
 export { resultTone, stepLabel, stepTone, summaryTitle } from './status';
 export { useInstallActions } from './useInstallActions';

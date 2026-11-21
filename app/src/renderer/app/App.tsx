@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AppLayout } from '@/components/layout';
 import { Typography } from '@/components/typography';
 import { Button } from '@/components/button';
 import { Stepper } from '@/components/stepper';
 import { useInstallerEvents } from '@/features/install';
-import { useProbe } from '@/features/system';
+import { useAppState } from '@/store';
 import Logo from '@/assets/images/logo/kirloskar-logo.svg';
 import { STEPS, type StepId } from './steps';
 
@@ -16,15 +16,22 @@ const SidebarContent = ({ stepId }: { stepId: StepId }) => (
 );
 
 export function App() {
-  // The install logic stays live behind the placeholder UI: the system probe fills the store on
-  // launch, and installer events keep flowing into it.
-  useProbe();
+  // Installer events flow into the store for the whole session. The system probe runs on the
+  // Get ready page (the first step), so it starts on launch.
   useInstallerEvents();
+  const state = useAppState();
 
   const [stepId, setStepId] = useState<StepId>(STEPS[0].id);
   const index = STEPS.findIndex((s) => s.id === stepId);
   const step = STEPS[index];
   const next = STEPS[index + 1];
+  const canProceed = 'canProceed' in step ? step.canProceed(state) : true;
+  const advanceTo: StepId | undefined =
+    'advanceWhen' in step && step.advanceWhen(state) ? ('advanceTo' in step ? step.advanceTo : next?.id) : undefined;
+
+  useEffect(() => {
+    if (advanceTo) setStepId(advanceTo);
+  }, [advanceTo]);
 
   return (
     <AppLayout
@@ -35,8 +42,14 @@ export function App() {
             {step.footerNote}
           </Typography>
           <div className="flex flex-row items-center gap-2">
-            {/* TODO: the last step has no next step yet; wire its action (e.g. launch the app). */}
-            <Button onClick={() => setStepId(next?.id ?? STEPS[0].id)}>{step.actionLabel}</Button>
+            {'actionLabel' in step && (
+              <Button
+                disabled={!canProceed}
+                onClick={() => ('onAction' in step ? void step.onAction() : setStepId(next?.id ?? STEPS[0].id))}
+              >
+                {step.actionLabel}
+              </Button>
+            )}
           </div>
         </>
       }

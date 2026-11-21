@@ -1,12 +1,26 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { computeModelBudget, parseNvidiaSmiOutput, parseRocmSmiJson } from '../hardware';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { computeDiskInfo, computeModelBudget, diskCheckPath, parseNvidiaSmiOutput, parseRocmSmiJson, REQUIRED_DISK_GB } from '../hardware';
+import { pullMissingModels } from '../orchestrator';
 import { buildModelRows, getModelMinMemory, getModelTier, getOllamaBaseUrl, loadModelCatalog, normalizeModelKey } from '../models';
 import { buildEngineScript, buildWindowsDockerScript } from '../docker';
 import { parsePullLine } from '../ollama';
-import { LineSplitter } from '../exec';
+import { execCommand, LineSplitter } from '../exec';
+import {
+  buildComposeArgs,
+  dockerCliCandidates,
+  dockerEnv,
+  formatBytes,
+  loadRegistryCredentials,
+  parseComposeProgress,
+  parseContainerState,
+  PullProgressTracker,
+  resolveDockerCli,
+} from '../containers';
+import { findHint, redact } from '../errors';
+import { DEFAULT_LAUNCH_URL, isWebUrl, loadLaunchUrl } from '../appConfig';
 import { getTargetUser, isWindowsArm64, parseOsRelease, quoteAppleScript, quotePs, quoteSh } from '../platform';
 
 describe('hardware', () => {
@@ -37,6 +51,56 @@ describe('hardware', () => {
       ramGB: 16,
       source: 'CPU with 16 GB RAM',
     });
+  });
+});
+
+describe('disk space', () => {
+  it('computes free GB from statfs numbers or bigints', () => {
+    expect(computeDiskInfo({ bavail: 25 * 1024 ** 2, bsize: 4096 }, '/home/u')).toEqual({
+      path: '/home/u',
+      freeGB: 100,
+      requiredGB: REQUIRED_DISK_GB,
+    });
+    expect(computeDiskInfo({ bavail: BigInt(1024 ** 2), bsize: BigInt(4096) }, 'C:\\').freeGB).toBe(4);
+  });
+
+  it('measures the system drive on Windows and the home folder elsewhere', () => {
+    expect(diskCheckPath('windows', { SystemDrive: 'D:' })).toBe('D:\\');
+    expect(diskCheckPath('windows', {})).toBe('C:\\');
+    expect(diskCheckPath('macos')).toBe(os.homedir());
+  });
+});
+
+describe('pullMissingModels', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** Fakes Ollama: /api/tags lists `installed`; /api/pull streams a successful pull. */
+  const fakeOllama = (installed: string[]) => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/tags')) {
+        return new Response(JSON.stringify({ models: installed.map((name) => ({ name, size: 1024 ** 3 })) }));
+      }
+      if (url.endsWith('/api/pull')) return new Response('{"status":"pulling"}\n{"status":"success"}\n');
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+  const pullCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/pull')).map(([, init]) => JSON.parse(init.body).model);
+
+  it('does not pull a model that is already downloaded', async () => {
+    const fetchMock = fakeOllama(['llama3.2:3b']);
+    const result = await pullMissingModels(['llama3.2:3b'], 'http://ollama', () => {}, () => {});
+    expect(result).toEqual({ pulled: [], skipped: ['llama3.2:3b'], failed: [] });
+    expect(pullCalls(fetchMock)).toEqual([]);
+  });
+
+  it('matches an installed model regardless of the :latest tag', async () => {
+    const fetchMock = fakeOllama(['phi4-mini:latest']);
+    const result = await pullMissingModels(['phi4-mini', 'qwen3:4b'], 'http://ollama', () => {}, () => {});
+    expect(result).toEqual({ pulled: ['qwen3:4b'], skipped: ['phi4-mini'], failed: [] });
+    expect(pullCalls(fetchMock)).toEqual(['qwen3:4b']);
   });
 });
 
@@ -176,5 +240,161 @@ describe('privileged scripts', () => {
     expect(withWsl).toContain('Add-LocalGroupMember');
     expect(withWsl).not.toContain('net localgroup');
     expect(buildWindowsDockerScript({ installWsl: false, arch: 'arm64', targetUser: 'ann' })).not.toContain('wsl.exe');
+  });
+});
+
+describe('execCommand input', () => {
+  it('writes input to stdin', async () => {
+    const res = await execCommand(process.execPath, ['-e', 'process.stdin.pipe(process.stdout)'], {
+      input: 'secret-token\n',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    expect(res.stdout.trim()).toBe('secret-token');
+  });
+});
+
+describe('containers', () => {
+  it('prefers the Docker Desktop CLI on macOS and falls back to PATH', () => {
+    const env = { HOME: '/Users/me' };
+    expect(dockerCliCandidates('macos', env)).toContain('/Users/me/.docker/bin/docker');
+    expect(resolveDockerCli('macos', (p) => p === '/usr/local/bin/docker', env)).toBe('/usr/local/bin/docker');
+    expect(resolveDockerCli('linux', () => false, env)).toBe('docker');
+    expect(resolveDockerCli('windows', () => true, { ProgramFiles: 'D:\\Apps' })).toBe('D:\\Apps\\Docker\\Docker\\resources\\bin\\docker.exe');
+  });
+
+  it('puts the CLI directory first on PATH (keeping Windows "Path")', () => {
+    expect(dockerEnv('/Applications/Docker.app/Contents/Resources/bin/docker', { PATH: '/usr/bin' }, 'macos').PATH).toBe(
+      '/Applications/Docker.app/Contents/Resources/bin:/usr/bin'
+    );
+    const win = dockerEnv('C:\\Docker\\bin\\docker.exe', { Path: 'C:\\Windows' }, 'windows');
+    expect(win.Path).toBe('C:\\Docker\\bin;C:\\Windows');
+    expect(win.PATH).toBeUndefined();
+    expect(dockerEnv('docker', { PATH: '/usr/bin' }, 'linux').PATH).toBe('/usr/bin');
+  });
+
+  it('reads the dev container state', () => {
+    expect(parseContainerState({ ok: true, stdout: 'true\n' })).toBe('running');
+    expect(parseContainerState({ ok: true, stdout: 'false\n' })).toBe('stopped');
+    expect(parseContainerState({ ok: false, output: 'Error response from daemon: No such container: ubuntu-nix-hm' })).toBe('missing');
+    expect(parseContainerState({ ok: false, output: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' })).toBe('unknown');
+    expect(parseContainerState({ ok: false, output: 'failed to connect to the docker API at unix:///x/docker.sock: no such file or directory' })).toBe('unknown');
+  });
+
+  it('builds compose arguments with a fixed project name', () => {
+    expect(buildComposeArgs('/r/compose.yml', 'up', '-d')).toEqual(['compose', '-f', '/r/compose.yml', '-p', 'enterprise-brain', 'up', '-d']);
+  });
+
+  describe('loadRegistryCredentials', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ghcr-creds-'));
+    const good = path.join(dir, 'good.json');
+    const bad = path.join(dir, 'bad.json');
+    fs.writeFileSync(good, JSON.stringify({ username: 'bot', token: ' ghp_x ' }));
+    fs.writeFileSync(bad, '{not json');
+
+    it('reads the first valid file', () => {
+      expect(loadRegistryCredentials([path.join(dir, 'missing.json'), bad, good], {})).toEqual({ username: 'bot', token: 'ghp_x' });
+    });
+
+    it('lets GHCR_USERNAME / GHCR_TOKEN win', () => {
+      expect(loadRegistryCredentials([good], { GHCR_USERNAME: 'me', GHCR_TOKEN: 't' })).toEqual({ username: 'me', token: 't' });
+    });
+
+    it('returns null when nothing is configured', () => {
+      expect(loadRegistryCredentials([bad], { GHCR_USERNAME: 'me' })).toBeNull();
+    });
+  });
+
+  it('picks hints for Docker and registry failures', () => {
+    expect(findHint('permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock')?.id).toBe(
+      'docker-permission'
+    );
+    expect(findHint('Docker did not become ready within 3 minutes.')?.id).toBe('docker-unreachable');
+    expect(findHint('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?')?.id).toBe(
+      'docker-unreachable'
+    );
+    expect(findHint('Error response from daemon: Head "https://ghcr.io/v2/design-bytes-pvt-ltd/ubuntu-nix-hm/manifests/latest": unauthorized')?.id).toBe(
+      'registry-denied'
+    );
+    expect(findHint('error from registry: denied')?.id).toBe('registry-denied');
+    expect(
+      findHint('failed to connect to the docker API at unix:///Users/me/.docker/run/docker.sock; dial unix: connect: no such file or directory')?.id
+    ).toBe('docker-unreachable');
+  });
+
+  it('redacts GitHub tokens', () => {
+    expect(redact('login with ghp_abcdefghijklmnopqrstuvwxyz0123 failed')).toBe('login with *** failed');
+    expect(redact('github_pat_11ABCDEFG0123456789_abcdefghij')).toBe('***');
+  });
+});
+
+describe('launch URL', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-config-'));
+  const write = (name: string, body: string) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, body);
+    return file;
+  };
+
+  it('accepts only http(s) links', () => {
+    expect(isWebUrl('https://example.com/x')).toBe(true);
+    expect(isWebUrl('http://localhost:3000')).toBe(true);
+    expect(isWebUrl('file:///etc/passwd')).toBe(false);
+    expect(isWebUrl('javascript:alert(1)')).toBe(false);
+    expect(isWebUrl('not a url')).toBe(false);
+    expect(isWebUrl(42)).toBe(false);
+  });
+
+  it('reads launchUrl from the config, with the env var winning', () => {
+    const config = write('ok.json', JSON.stringify({ launchUrl: ' https://brain.example.com ' }));
+    expect(loadLaunchUrl(config, {})).toBe('https://brain.example.com');
+    expect(loadLaunchUrl(config, { ENTERPRISE_BRAIN_URL: 'http://localhost:8080' })).toBe('http://localhost:8080');
+  });
+
+  it('falls back to the default for a missing, invalid or unsafe config', () => {
+    expect(loadLaunchUrl(path.join(dir, 'missing.json'), {})).toBe(DEFAULT_LAUNCH_URL);
+    expect(loadLaunchUrl(write('bad.json', '{oops'), {})).toBe(DEFAULT_LAUNCH_URL);
+    expect(loadLaunchUrl(write('file.json', JSON.stringify({ launchUrl: 'file:///etc/passwd' })), {})).toBe(DEFAULT_LAUNCH_URL);
+  });
+});
+
+describe('dev container pull progress', () => {
+  // Captured from `docker compose --progress json pull` (Compose v5.6), plus a second layer.
+  const lines = [
+    '{"id":"Image debian:bookworm-slim","status":"Working","text":"Pulling"}',
+    '{"id":"2d66c782e484","parent_id":"Image debian:bookworm-slim","status":"Working","text":"Pulling fs layer","details":"0B"}',
+    '{"id":"9e2a41483b7f","parent_id":"Image debian:bookworm-slim","status":"Done","text":"Download complete","details":"0B","percent":100}',
+    '{"id":"2d66c782e484","parent_id":"Image debian:bookworm-slim","status":"Working","text":"Downloading","details":"1.049MB","current":1048576,"total":28144358,"percent":3}',
+    '{"id":"aaaaaaaaaaaa","parent_id":"Image debian:bookworm-slim","status":"Working","text":"Downloading","details":"0B","current":0,"total":71855642,"percent":0}',
+    '{"id":"2d66c782e484","parent_id":"Image debian:bookworm-slim","status":"Done","text":"Download complete","details":"0B","percent":100}',
+    '{"id":"aaaaaaaaaaaa","parent_id":"Image debian:bookworm-slim","status":"Done","text":"Download complete","details":"0B","percent":100}',
+    '{"id":"2d66c782e484","parent_id":"Image debian:bookworm-slim","status":"Working","text":"Extracting","details":"1B","current":1}',
+  ];
+
+  it('formats bytes in decimal units', () => {
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(850_000)).toBe('850 KB');
+    expect(formatBytes(3_145_728)).toBe('3.1 MB');
+    expect(formatBytes(312_400_000)).toBe('312 MB');
+    expect(formatBytes(1_214_000_000)).toBe('1.21 GB');
+  });
+
+  it('parses JSON lines and ignores plain output', () => {
+    expect(parseComposeProgress(lines[0])).toEqual({ id: 'Image debian:bookworm-slim', status: 'Working', text: 'Pulling' });
+    expect(parseComposeProgress('Error response from daemon: error from registry: unauthorized')).toBeNull();
+    expect(parseComposeProgress('{broken')).toBeNull();
+  });
+
+  it('adds up layers into MB of MB, then reports unpacking', () => {
+    const tracker = new PullProgressTracker();
+    const statuses = lines.map((l) => tracker.update(parseComposeProgress(l)!));
+    // Image lines, "Pulling fs layer" and a completed layer of unknown size change nothing.
+    expect(statuses.slice(0, 3)).toEqual([null, null, null]);
+    expect(statuses[3]).toEqual({ label: 'Downloading the dev container: 1.0 MB of 28 MB', percent: 3 });
+    // A second layer starts: the total grows, but the bar does not go back.
+    expect(statuses[4]).toEqual({ label: 'Downloading the dev container: 1.0 MB of 100 MB', percent: 3 });
+    expect(statuses[5]).toEqual({ label: 'Downloading the dev container: 28 MB of 100 MB', percent: 28 });
+    expect(statuses[6]).toEqual({ label: 'Downloading the dev container: 100 MB of 100 MB', percent: 100 });
+    expect(statuses[7]).toEqual({ label: 'Unpacking the dev container...', percent: 100 });
+    expect(tracker.downloadedBytes).toBe(100_000_000);
   });
 });

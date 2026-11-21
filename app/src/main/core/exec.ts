@@ -7,6 +7,8 @@ export interface ExecOptions {
   onOutput?: (line: string) => void;
   allowedExitCodes?: number[];
   env?: NodeJS.ProcessEnv;
+  /** Written to the child's stdin, which is then closed. Use it for secrets (never put them in args). */
+  input?: string;
 }
 
 export interface ExecResult {
@@ -77,7 +79,7 @@ export async function execCommand(command: string, args: string[] = [], options:
   const allowed = options.allowedExitCodes ?? [0];
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       signal: options.signal,
       env: options.env ?? process.env,
       windowsHide: true,
@@ -103,6 +105,12 @@ export async function execCommand(command: string, args: string[] = [], options:
       stderr = appendCapped(stderr, text);
       errLines.push(text);
     });
+
+    if (options.input !== undefined && child.stdin) {
+      // The child may exit before reading everything; that surfaces as its exit code, not EPIPE.
+      child.stdin.on('error', () => {});
+      child.stdin.end(options.input);
+    }
 
     child.on('error', (err) => reject(err));
     child.on('close', (code) => {

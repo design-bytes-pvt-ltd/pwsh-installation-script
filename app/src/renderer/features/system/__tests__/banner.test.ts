@@ -6,9 +6,11 @@ const probe: ProbeResult = {
   os: 'macos',
   arch: 'arm64',
   budget: { budgetGB: 12, ramGB: 16, source: '16 GB unified memory' },
+  disk: null,
   ollamaInstalled: false,
   ollamaPath: null,
   dockerInstalled: 'none',
+  devContainer: 'missing',
   models: [],
 };
 

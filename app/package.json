@@ -55,6 +55,18 @@
       {
         "from": "../models.json",
         "to": "models.json"
+      },
+      {
+        "from": "../containers/docker-compose.yml",
+        "to": "containers/docker-compose.yml"
+      },
+      {
+        "from": "../ghcr-credentials.json",
+        "to": "ghcr-credentials.json"
+      },
+      {
+        "from": "../app-config.json",
+        "to": "app-config.json"
       }
     ],
     "win": {

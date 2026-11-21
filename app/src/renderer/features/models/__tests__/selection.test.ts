@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { ModelRow } from '../../../../shared/types';
-import { downloadSizeGB, selectionSummary, tierClassName, tooLargeSelected } from '../selection';
+import { downloadSizeGB, recommendedModel, selectionSummary, tierClassName, tooLargeSelected } from '../selection';
 
 const row = (name: string, extra: Partial<ModelRow> = {}): ModelRow => ({
   name,
@@ -39,5 +39,12 @@ describe('model selection', () => {
     expect(tierClassName('recommended')).toBe('text-success');
     expect(tierClassName('may be slow')).toBe('text-warning');
     expect(tierClassName('too large')).toBe('text-muted-foreground');
+  });
+});
+
+describe('recommendedModel', () => {
+  test('returns the default row, or null when there is none', () => {
+    expect(recommendedModel([row('a'), row('b', { isDefault: true })])?.name).toBe('b');
+    expect(recommendedModel([row('a')])).toBeNull();
   });
 });
