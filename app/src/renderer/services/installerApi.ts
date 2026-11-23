@@ -12,5 +12,6 @@ export const installerApi: InstallerApi = {
   copyErrorReport: () => window.installerApi.copyErrorReport(),
   reportError: (error) => window.installerApi.reportError(error),
   launchApp: () => window.installerApi.launchApp(),
+  quit: () => window.installerApi.quit(),
   onEvent: (callback) => window.installerApi.onEvent(callback),
 };

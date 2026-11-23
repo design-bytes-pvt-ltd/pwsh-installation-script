@@ -20,6 +20,11 @@ type StepperProps<T extends string = string> = Omit<ComponentProps<'ol'>, 'child
    * An id that matches no step shows every step as upcoming.
    */
   value: T;
+  /**
+   * The step named by `value` is done as well, so it shows as complete instead of active (e.g. a
+   * final step with nothing left to do). It stays the current step for screen readers.
+   */
+  completed?: boolean;
 };
 
 /*
@@ -83,22 +88,23 @@ const connectorBase = 'pointer-events-none absolute left-[25px] w-0.5';
 const connectorColor = (done: boolean) =>
   done ? 'bg-stepper-connector-complete' : 'bg-sidebar-foreground/28';
 
-function statusOf(index: number, activeIndex: number): StepStatus {
+function statusOf(index: number, activeIndex: number, completed = false): StepStatus {
   if (activeIndex < 0) return 'upcoming';
   if (index < activeIndex) return 'complete';
-  if (index === activeIndex) return 'active';
+  if (index === activeIndex) return completed ? 'complete' : 'active';
   return 'upcoming';
 }
 
-function Stepper<T extends string>({ steps, value, className, ...props }: StepperProps<T>) {
+function Stepper<T extends string>({ steps, value, completed = false, className, ...props }: StepperProps<T>) {
   // Order comes from the list; callers only ever name steps by id.
   const activeIndex = steps.findIndex((step) => step.id === value);
 
   return (
     <ol data-slot="stepper" className={cn('flex flex-col', className)} {...props}>
       {steps.map((step, index) => {
-        const status = statusOf(index, activeIndex);
+        const status = statusOf(index, activeIndex, completed);
         const isActive = status === 'active';
+        const isCurrent = index === activeIndex;
         // The line between two steps is drawn as this step's "tail" plus the next step's "head",
         // so the two halves meet at the row boundary. The active card covers both of its halves.
         const showHead = index > 0 && !isActive;
@@ -108,7 +114,7 @@ function Stepper<T extends string>({ steps, value, className, ...props }: Steppe
           <li
             key={step.id}
             data-status={status}
-            aria-current={isActive ? 'step' : undefined}
+            aria-current={isCurrent ? 'step' : undefined}
             className={itemVariants({ status })}
           >
             {showHead && (
@@ -118,7 +124,7 @@ function Stepper<T extends string>({ steps, value, className, ...props }: Steppe
                 className={cn(
                   connectorBase,
                   'top-0 h-[calc(50%-20px)]',
-                  connectorColor(statusOf(index - 1, activeIndex) === 'complete')
+                  connectorColor(statusOf(index - 1, activeIndex, completed) === 'complete')
                 )}
               />
             )}

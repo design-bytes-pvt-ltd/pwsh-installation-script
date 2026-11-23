@@ -55,6 +55,7 @@
     --color-input: var(--input);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
+    --color-destructive-subtle: var(--destructive-subtle);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
     --color-muted-foreground: var(--muted-foreground);
@@ -126,6 +127,7 @@
     --palette-slate-900: #0f172a;
 
     /* Status hues */
+    --palette-red-50: #fef2f2;
     --palette-red-500: #ef4444;
     --palette-red-600: oklch(0.577 0.245 27.325);
     --palette-green-500: #22c55e;
@@ -160,6 +162,8 @@
     --accent-foreground: var(--palette-neutral-900);
     --destructive: var(--palette-red-600);
     --destructive-foreground: var(--palette-white);
+    /* Light red background for a failed item (e.g. a row in the Requirements table) */
+    --destructive-subtle: var(--palette-red-50);
     --border: var(--palette-neutral-200);
     --divider: var(--palette-sage-100);
     --input: var(--palette-neutral-200);
@@ -227,6 +231,7 @@
     --accent-foreground: var(--palette-slate-50);
     --destructive: var(--palette-red-500);
     --destructive-foreground: var(--palette-white);
+    --destructive-subtle: color-mix(in oklab, var(--palette-red-500) 15%, transparent);
     --border: var(--palette-slate-700);
     --divider: var(--palette-slate-700);
     --input: var(--palette-slate-700);

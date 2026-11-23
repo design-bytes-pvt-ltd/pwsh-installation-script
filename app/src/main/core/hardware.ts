@@ -2,15 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execCommand } from './exec';
 import { commandExists, getArch, getTargetOS } from './platform';
-import type { Arch, DiskInfo, ModelBudget, TargetOS } from '../../shared/types';
+import type { Arch, DiskInfo, GpuInfo, ModelBudget, TargetOS } from '../../shared/types';
 
 /** Free space Ollama, the model and Docker need, in GB. */
-export const REQUIRED_DISK_GB = 60;
+export const REQUIRED_DISK_GB = 111160;
 
-export interface GpuInfo {
-  vendor: 'NVIDIA' | 'AMD';
-  vramGB: number;
-}
+export type { GpuInfo };
 
 export function getSystemMemoryGB(): number | null {
   const bytes = os.totalmem();

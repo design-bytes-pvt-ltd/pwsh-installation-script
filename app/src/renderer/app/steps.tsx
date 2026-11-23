@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from 'react';
 import type { StepperStep } from '@/components/stepper';
-import { diskTooLow, everythingInstalled } from '@/features/system';
+import { diskTooLow, everythingInstalled, requirementsStatus } from '@/features/system';
 import { FinishPage, GetReadyFooterNote, GetReadyPage, InstallPage } from '@/pages';
 import { installerApi } from '@/services/installerApi';
 import type { AppState } from '@/store';
@@ -20,6 +20,8 @@ type AppStep = StepperStep & {
   onAction?: () => Promise<void>;
   /** Whether the footer button is enabled. Omitted: always enabled. */
   canProceed?: (state: AppState) => boolean;
+  /** When this returns true the footer button becomes a secondary "Exit" that closes the installer. */
+  exitWhen?: (state: AppState) => boolean;
   /** Moves on by itself as soon as this returns true: to `advanceTo`, or else the next step. */
   advanceWhen?: (state: AppState) => boolean;
   /** Step id `advanceWhen` moves to. Omitted: the next step. */
@@ -37,6 +39,11 @@ export const STEPS = [
     actionLabel: 'Get Started',
     // The system check must have finished, and found enough disk space (unknown space does not block).
     canProceed: (state) => state.probe !== null && !diskTooLow(state.probe),
+    // The check failed or found a blocker: setup can't go on, so offer to close the installer instead.
+    exitWhen: (state) => {
+      const { kind } = requirementsStatus(state.probe, state.probeError);
+      return kind === 'error' || kind === 'blocked';
+    },
     // Nothing to install (Ollama, Docker, the model and the running dev container are there): skip to Finish.
     advanceWhen: (state) => everythingInstalled(state.probe),
     advanceTo: 'finish',

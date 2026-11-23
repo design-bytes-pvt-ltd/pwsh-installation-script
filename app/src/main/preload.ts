@@ -11,6 +11,7 @@ const api: InstallerApi = {
   copyErrorReport: () => ipcRenderer.invoke('install:copy-report'),
   reportError: (error) => ipcRenderer.invoke('log:renderer-error', error),
   launchApp: () => ipcRenderer.invoke('app:launch'),
+  quit: () => ipcRenderer.invoke('app:quit'),
   onEvent: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: InstallEvent) => callback(payload);
     ipcRenderer.on('install:event', listener);

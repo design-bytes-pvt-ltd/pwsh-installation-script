@@ -2,29 +2,34 @@ import { detectDevContainer, startContainers } from './containers';
 import { detectDocker, installDocker } from './docker';
 import { ErrorReport, ReportedError, toErrorReport } from './errors';
 import { logEvent } from './events';
-import { getDiskInfo, getModelBudget } from './hardware';
+import { computeModelBudget, getDiskInfo, getGpuMemoryGB, getSystemMemoryGB } from './hardware';
 import { buildModelRows, getInstalledModels, getOllamaBaseUrl, loadModelCatalog, normalizeModelKey } from './models';
 import { getOllamaExe, installOllama, pullModelStream, waitForOllamaServer } from './ollama';
 import type { InstallLogger } from './logger';
 import { getArch, getTargetOS } from './platform';
 import type { InstallEvent, InstallOptions, ProbeResult, StepName } from '../../shared/types';
 
+/** Checks everything at once: the detections that don't depend on each other run in parallel. */
 export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
   const os = getTargetOS();
-  const arch = await getArch(os);
-  const budget = await getModelBudget(os);
-  const disk = await getDiskInfo(os);
-  const ollamaPath = await getOllamaExe(os);
-  const dockerInstalled = await detectDocker(os);
+  const [arch, gpu, disk, ollamaPath, dockerInstalled, installed] = await Promise.all([
+    getArch(os),
+    getGpuMemoryGB(os),
+    getDiskInfo(os),
+    getOllamaExe(os),
+    detectDocker(os),
+    getInstalledModels(getOllamaBaseUrl(), os),
+  ]);
+  // These need a result from above.
   const devContainer = await detectDevContainer(dockerInstalled, os);
-  const catalog = loadModelCatalog(catalogPath);
-  const installed = await getInstalledModels(getOllamaBaseUrl(), os);
-  const models = buildModelRows(catalog, installed, budget);
+  const budget = computeModelBudget(getSystemMemoryGB(), gpu, os, arch);
+  const models = buildModelRows(loadModelCatalog(catalogPath), installed, budget);
 
   return {
     os,
     arch,
     budget,
+    gpu,
     disk,
     ollamaInstalled: Boolean(ollamaPath),
     ollamaPath,

@@ -55,6 +55,21 @@ describe('Stepper', () => {
     expect(items().map((li) => li.dataset.status)).toEqual(['complete', 'complete', 'active']);
   });
 
+  test('completed shows the current step as complete too, still marked current', () => {
+    render(<Stepper steps={steps} value="finish" completed />);
+    expect(items().map((li) => li.dataset.status)).toEqual(['complete', 'complete', 'complete']);
+    expect(items()[2].getAttribute('aria-current')).toBe('step');
+    expect(items()[2].textContent).toContain('Completed:');
+    // No active card, so the line into the last step is drawn, in green.
+    const head = items()[2].querySelector<HTMLElement>('[data-slot="stepper-connector"]')!;
+    expect(head.className).toContain('bg-stepper-connector-complete');
+  });
+
+  test('completed on a middle step leaves later steps upcoming', () => {
+    render(<Stepper steps={steps} value="install" completed />);
+    expect(items().map((li) => li.dataset.status)).toEqual(['complete', 'complete', 'upcoming']);
+  });
+
   test('an unknown value shows every step as upcoming', () => {
     render(<Stepper steps={steps} value="nope" />);
     expect(items().every((li) => li.dataset.status === 'upcoming')).toBe(true);

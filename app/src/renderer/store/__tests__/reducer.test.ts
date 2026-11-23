@@ -21,6 +21,7 @@ const probe: ProbeResult = {
   ollamaPath: null,
   dockerInstalled: 'none',
   devContainer: 'missing',
+  gpu: null,
   models: [model('a', true), model('b', false), model('c', true)],
 };
 

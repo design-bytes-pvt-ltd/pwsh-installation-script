@@ -24,6 +24,7 @@ export const sampleProbe: ProbeResult = {
   ollamaPath: '/usr/bin/ollama',
   dockerInstalled: 'none',
   devContainer: 'missing',
+  gpu: null,
   models: [
     modelRow('llama3', { isDefault: true, sizeGB: 4.7 }),
     modelRow('tiny', { sizeGB: 0.5 }),
@@ -53,6 +54,7 @@ export function installFakeInstallerApi(probe: ProbeResult = sampleProbe): FakeI
     copyErrorReport: vi.fn().mockResolvedValue(true),
     reportError: vi.fn().mockResolvedValue(undefined),
     launchApp: vi.fn().mockResolvedValue(undefined),
+    quit: vi.fn().mockResolvedValue(undefined),
     onEvent: vi.fn((cb: (e: InstallEvent) => void) => {
       listeners.add(cb);
       return () => listeners.delete(cb);

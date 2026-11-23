@@ -10,5 +10,7 @@ export interface InstallerApi {
   reportError: (error: { message: string; stack?: string; source?: string }) => Promise<void>;
   /** Opens Enterprise Brain (the configured launch URL) in the default browser. */
   launchApp: () => Promise<void>;
+  /** Closes the installer (stopping a running install first). */
+  quit: () => Promise<void>;
   onEvent: (callback: (event: InstallEvent) => void) => () => void;
 }

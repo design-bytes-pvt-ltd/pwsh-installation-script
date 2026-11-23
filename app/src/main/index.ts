@@ -192,6 +192,11 @@ app.whenReady().then(() => {
     await shell.openExternal(loadLaunchUrl(resolveResourcePath('app-config.json')));
   });
 
+  ipcMain.handle('app:quit', () => {
+    activeController?.abort();
+    app.quit();
+  });
+
   ipcMain.handle('install:cancel', () => {
     activeController?.abort();
   });

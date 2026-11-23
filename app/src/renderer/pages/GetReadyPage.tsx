@@ -1,9 +1,10 @@
 import { HardDrive, Loader2, Lock, ShieldCheck } from 'lucide-react';
 import { Banner } from '@/components/banner';
 import { Typography } from '@/components/typography';
-import { MIN_REQUIREMENTS_CHECK_MS, requirementsStatus, useProbe, useReprobe } from '@/features/system';
+import { MIN_REQUIREMENTS_CHECK_MS, requirementsStatus, useProbe } from '@/features/system';
 import { useAppState } from '@/store';
 import HerBanner from '@/assets/images/banner/hero-banner.svg';
+import { RequirementsPage } from './Requirements';
 
 const features = [
   {
@@ -21,12 +22,11 @@ const features = [
 ];
 
 /**
- * Footer text left of "Get Started": progress of the system requirements check, why it blocks
- * setup, or the usual note once everything is fine.
+ * Footer text left of "Get Started": progress of the system requirements check, a pointer to the
+ * Requirements page when it failed, or the usual note once everything is fine.
  */
 export function GetReadyFooterNote() {
   const { probe, probeError } = useAppState();
-  const reprobe = useReprobe(MIN_REQUIREMENTS_CHECK_MS);
   const status = requirementsStatus(probe, probeError);
 
   switch (status.kind) {
@@ -38,28 +38,24 @@ export function GetReadyFooterNote() {
         </span>
       );
     case 'error':
-      return (
-        <span role="alert" className="inline-flex items-center gap-[6px] text-destructive">
-          {status.message}
-          <button type="button" className="cursor-pointer font-semibold underline" onClick={() => void reprobe()}>
-            Try again
-          </button>
-        </span>
-      );
     case 'blocked':
-      return (
-        <span role="alert" className="text-destructive">
-          {status.message}
-        </span>
-      );
+      // The Requirements page in the content area explains what is wrong and offers "Try again".
+      return "Share this list with your IT team";
     case 'ready':
       return 'Takes about 30 minutes';
   }
 }
 
-/** Content area for the "Get ready" step. Starts the system requirements check on mount. */
+/**
+ * Content area for the "Get ready" step. Starts the system requirements check on mount, and shows
+ * the Requirements page instead of the welcome content when the check fails.
+ */
 export function GetReadyPage() {
   useProbe(MIN_REQUIREMENTS_CHECK_MS);
+  const { probe, probeError } = useAppState();
+  const status = requirementsStatus(probe, probeError);
+  if (status.kind === 'error' || status.kind === 'blocked') return <RequirementsPage status={status} />;
+
   return (
     <div className="w-full flex flex-col gap-[32px]">
       <Banner src={HerBanner} alt="Hero banner" />

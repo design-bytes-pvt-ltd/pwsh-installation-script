@@ -90,12 +90,25 @@ describe('App', () => {
     expect(screen.queryByRole('list', { name: 'System check' })).toBeNull();
   });
 
-  test('Get Started stays disabled when there is not enough disk space', async () => {
-    installFakeInstallerApi({ ...sampleProbe, disk: { path: 'C:\\', freeGB: 20, requiredGB: 60 } });
+  test('not enough disk space lists the requirements and offers Exit instead of Get Started', async () => {
+    fake = installFakeInstallerApi({ ...sampleProbe, disk: { path: 'C:\\', freeGB: 20, requiredGB: 60 } });
     renderApp();
-    await advance();
-    expect(screen.getByText('Not enough disk space: 20.0 GB free on C:\\, needs 60 GB')).toBeTruthy();
     expect(footerButton('Get Started').disabled).toBe(true);
+    await advance();
+    // The welcome content gives way to the Requirements page, which says what to do.
+    expect(screen.getByRole('heading', { name: 'Your PC needs a few upgrades' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Welcome to Enterprise Brain' })).toBeNull();
+    const disk = within(screen.getByRole('list', { name: 'System requirements' })).getByText('60 GB free space').closest('li')!;
+    expect(disk.dataset.status).toBe('failed');
+    expect(within(disk).getByText('Needs 60.0 GB · found 20.0 GB')).toBeTruthy();
+    expect(screen.getByText('Share this list with your IT team')).toBeTruthy();
+
+    expect(within(screen.getByRole('main')).queryByRole('button', { name: 'Get Started' })).toBeNull();
+    const exit = footerButton('Exit');
+    expect(exit.disabled).toBe(false);
+    expect(exit.dataset.variant).toBe('secondary');
+    fireEvent.click(exit);
+    expect(fake.api.quit).toHaveBeenCalledTimes(1);
   });
 
   const allInstalled = {
@@ -126,20 +139,16 @@ describe('App', () => {
     expect(footerButton('Get Started').disabled).toBe(false);
   });
 
-  test('a failed system check can be retried', async () => {
+  test('a failed system check shows the error and offers Exit', async () => {
     fake.api.probe.mockRejectedValueOnce(new Error('no hardware info'));
     renderApp();
     await advance();
-    expect(screen.getByText("Couldn't check system requirements: no hardware info")).toBeTruthy();
-    expect(footerButton('Get Started').disabled).toBe(true);
-
-    // Retrying shows "checking" again (not the old error) for the minimum duration.
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(screen.getByText('Checking system requirements…')).toBeTruthy();
-    expect(screen.queryByText(/Couldn't check/)).toBeNull();
-    await advance();
-    expect(footerButton('Get Started').disabled).toBe(false);
-    expect(fake.api.probe).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('heading', { name: "We couldn't check this computer" })).toBeTruthy();
+    const check = within(screen.getByRole('list', { name: 'System requirements' })).getByText('System check').closest('li')!;
+    expect(within(check).getByText('no hardware info')).toBeTruthy();
+    expect(within(screen.getByRole('main')).queryByRole('button', { name: 'Get Started' })).toBeNull();
+    fireEvent.click(footerButton('Exit'));
+    expect(fake.api.quit).toHaveBeenCalledTimes(1);
   });
 
   test('the Install step starts once with the recommended model, has no footer button and moves to Finish on success', async () => {

@@ -33,6 +33,12 @@ export interface ModelRow {
   isDefault: boolean;
 }
 
+/** A graphics card with its own memory, found by nvidia-smi or rocm-smi. */
+export interface GpuInfo {
+  vendor: 'NVIDIA' | 'AMD';
+  vramGB: number;
+}
+
 /** Free space on the drive the tools and models install to. */
 export interface DiskInfo {
   /** The path that was measured (e.g. "C:\\" or the home folder). */
@@ -45,6 +51,8 @@ export interface ProbeResult {
   os: TargetOS;
   arch: Arch;
   budget: ModelBudget | null;
+  /** Null when no NVIDIA or AMD graphics card was found (Apple silicon shares memory instead). */
+  gpu: GpuInfo | null;
   /** Null when free space could not be measured. */
   disk: DiskInfo | null;
   ollamaInstalled: boolean;

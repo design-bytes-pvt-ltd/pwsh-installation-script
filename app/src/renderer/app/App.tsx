@@ -4,6 +4,7 @@ import { Typography } from '@/components/typography';
 import { Button } from '@/components/button';
 import { Stepper } from '@/components/stepper';
 import { useInstallerEvents } from '@/features/install';
+import { installerApi } from '@/services/installerApi';
 import { useAppState } from '@/store';
 import Logo from '@/assets/images/logo/kirloskar-logo.svg';
 import { STEPS, type StepId } from './steps';
@@ -11,7 +12,8 @@ import { STEPS, type StepId } from './steps';
 const SidebarContent = ({ stepId }: { stepId: StepId }) => (
   <div className="flex flex-col gap-[56px]">
     <img src={Logo} alt="Logo" className="w-[100px] h-[36px] ml-[12px]" />
-    <Stepper steps={STEPS} value={stepId} />
+    {/* The last step (Finish) has nothing left to do, so reaching it completes the whole flow. */}
+    <Stepper steps={STEPS} value={stepId} completed={stepId === STEPS[STEPS.length - 1].id} />
   </div>
 );
 
@@ -26,6 +28,7 @@ export function App() {
   const step = STEPS[index];
   const next = STEPS[index + 1];
   const canProceed = 'canProceed' in step ? step.canProceed(state) : true;
+  const showExit = 'exitWhen' in step && step.exitWhen(state);
   const advanceTo: StepId | undefined =
     'advanceWhen' in step && step.advanceWhen(state) ? ('advanceTo' in step ? step.advanceTo : next?.id) : undefined;
 
@@ -42,7 +45,11 @@ export function App() {
             {step.footerNote}
           </Typography>
           <div className="flex flex-row items-center gap-2">
-            {'actionLabel' in step && (
+            {showExit ? (
+              <Button variant="secondary" onClick={() => void installerApi.quit()}>
+                Exit
+              </Button>
+            ) : 'actionLabel' in step && (
               <Button
                 disabled={!canProceed}
                 onClick={() => ('onAction' in step ? void step.onAction() : setStepId(next?.id ?? STEPS[0].id))}
