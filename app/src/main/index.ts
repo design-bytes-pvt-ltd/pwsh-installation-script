@@ -123,7 +123,7 @@ function createWindow(): void {
     height: 700,
     minWidth: 780,
     minHeight: 580,
-    title: 'Docker + Ollama Installer',
+    title: 'Enterprise Brain Installer',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

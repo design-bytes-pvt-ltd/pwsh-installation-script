@@ -322,7 +322,7 @@ export interface HeaderFields {
 export function formatHeader(h: HeaderFields): string {
   return [
     RULE,
-    ' Docker + Ollama Installer log',
+    ' Enterprise Brain Installer log',
     field('Started', h.started),
     field('Source', h.source),
     field('System', h.system),

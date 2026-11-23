@@ -41,7 +41,7 @@
   },
   "build": {
     "appId": "com.local.docker-ollama-installer",
-    "productName": "Docker + Ollama Installer",
+    "productName": "Enterprise Brain Installer",
     "directories": {
       "output": "release"
     },

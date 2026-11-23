@@ -1,4 +1,4 @@
-# Docker + Ollama installer
+# Enterprise Brain installer
 
 A desktop app (Electron) that installs **Ollama**, pulls **Ollama models**, and installs **Docker Desktop** on Windows, macOS and Linux. You pick the models, then it runs unattended and skips anything that is already installed.
 

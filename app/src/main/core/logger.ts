@@ -15,7 +15,7 @@ import { getOsRelease, getTargetOS, isWindowsArm64 } from './platform';
 import type { InstallEvent, InstallOptions } from '../../shared/types';
 
 /** Log folder name; matches the packaged app's productName. */
-export const LOG_DIR_NAME = 'Docker + Ollama Installer';
+export const LOG_DIR_NAME = 'Enterprise Brain Installer';
 export const LOGS_TO_KEEP = 10;
 
 /**

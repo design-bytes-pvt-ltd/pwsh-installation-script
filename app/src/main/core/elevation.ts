@@ -92,7 +92,7 @@ export const SH_PREAMBLE = [
 ].join('\n');
 
 async function createLinuxAskpass(dir: string): Promise<string | null> {
-  const prompt = 'Docker + Ollama Installer needs your password to install system packages.';
+  const prompt = 'Enterprise Brain Installer needs your password to install system packages.';
   let body: string | null = null;
   if (await commandExists('zenity', 'linux')) {
     body = `exec zenity --password --title=${quoteSh('Administrator password')} 2>/dev/null`;
