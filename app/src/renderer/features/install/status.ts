@@ -1,5 +1,5 @@
 import type { SegmentStatus } from '@/components/segmented-progress';
-import type { SummaryEvent, StepState } from '@/store';
+import { STEP_NAMES, type SummaryEvent, type StepState } from '@/store';
 
 export type StatusTone = 'neutral' | 'running' | 'done' | 'failed' | 'cancelled';
 
@@ -50,4 +50,10 @@ export function stepSegment(step: StepState): { status: SegmentStatus; value: nu
       // pending, or cancelled before it finished
       return { status: 'upcoming', value: step.percent ?? 0 };
   }
+}
+
+/** The progress label without its "Containers: " step prefix, for the caption under the progress card. */
+export function progressCaption(progressLabel: string): string {
+  const step = STEP_NAMES.find((name) => progressLabel.startsWith(`${name}: `));
+  return step ? progressLabel.slice(step.length + 2) : progressLabel;
 }

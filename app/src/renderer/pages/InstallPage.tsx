@@ -4,7 +4,7 @@ import { Button } from '@/components/button';
 import { Typography } from '@/components/typography';
 import { SegmentedProgress } from '@/components/segmented-progress';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { FailureList, LogViewer, stepSegment, useInstallActions } from '@/features/install';
+import { FailureList, LogViewer, progressCaption, stepSegment, useInstallActions } from '@/features/install';
 import { recommendedModel } from '@/features/models';
 import { useTimedText } from '@/hooks/useTimedText';
 import { STEP_NAMES, useAppState } from '@/store';
@@ -64,7 +64,14 @@ export function InstallPage() {
         </Typography>
       </div>
 
-      <SegmentedProgress segments={segments} />
+      <div className="flex flex-col gap-[8px]">
+        <SegmentedProgress segments={segments} />
+        {install.running && (
+          <Typography variant="caption" aria-live="polite" className="px-[4px] text-subtle-foreground">
+            {progressCaption(install.progressLabel)}
+          </Typography>
+        )}
+      </div>
 
       {summary && summary.notes.length > 0 && (
         <div className="flex flex-col gap-[6px]">

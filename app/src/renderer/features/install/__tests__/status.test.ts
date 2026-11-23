@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { resultTone, stepLabel, stepSegment, stepTone, summaryTitle } from '../status';
+import { progressCaption, resultTone, stepLabel, stepSegment, stepTone, summaryTitle } from '../status';
 
 describe('install status', () => {
   test('step labels and tones', () => {
@@ -18,6 +18,14 @@ describe('install status', () => {
     expect(stepSegment({ status: 'skipped' })).toEqual({ status: 'complete', value: 100 });
     expect(stepSegment({ status: 'failed', percent: 30 })).toEqual({ status: 'error', value: 30 });
     expect(stepSegment({ status: 'cancelled', percent: 30 })).toEqual({ status: 'upcoming', value: 30 });
+  });
+
+  test('progress caption drops the step prefix', () => {
+    expect(progressCaption('Containers: Downloading the dev container: 312 MB of 3.87 GB')).toBe(
+      'Downloading the dev container: 312 MB of 3.87 GB'
+    );
+    expect(progressCaption('Models: llama3: pulling')).toBe('llama3: pulling');
+    expect(progressCaption('Starting setup...')).toBe('Starting setup...');
   });
 
   test('result tones', () => {

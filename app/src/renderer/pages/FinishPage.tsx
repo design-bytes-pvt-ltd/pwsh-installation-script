@@ -5,7 +5,7 @@ import SuccessBanner from '@/assets/images/banner/success-banner.svg';
 /** Content area for the "Finish" step. */
 export function FinishPage() {
   return (
-    <div className="flex flex-col gap-[32px]">
+    <div className="w-full flex flex-col gap-[32px]">
       <Banner src={SuccessBanner} alt="Success banner" />
       <div className="flex flex-col gap-[10px]">
         <Typography variant="h1">Enterprise Brain is ready</Typography>

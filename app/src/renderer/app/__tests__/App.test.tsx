@@ -158,14 +158,16 @@ describe('App', () => {
     });
     const overall = () => screen.getByRole('progressbar', { name: 'Overall progress' }).textContent;
     expect(overall()).toBe('0%');
-    expect(screen.getByText('AI model')).toBeTruthy();
-    expect(screen.getByText('Dev container')).toBeTruthy();
+    expect(screen.getByText('Pulling AI model')).toBeTruthy();
+    expect(screen.getByText('Installing container')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
 
     act(() => fake.emit({ type: 'step', step: 'Ollama', status: 'done', detail: 'already present' }));
     act(() => fake.emit({ type: 'progress', step: 'Models', label: 'llama3: pulling', percent: 50 }));
     // Four equal stages: Ollama done (100) + the model half way (50) = 150 / 4.
     expect(overall()).toBe('38%');
+    // The latest progress label shows under the card, without its step name.
+    expect(screen.getByText('llama3: pulling')).toBeTruthy();
     expect(activeStep()?.textContent).toContain('Install');
 
     await act(async () => {

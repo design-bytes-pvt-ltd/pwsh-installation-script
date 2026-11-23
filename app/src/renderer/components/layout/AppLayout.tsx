@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { APP_VERSION } from '@/lib/version';
 import sidebarBg from '@/assets/images/sidebar/sidebar-bg-cover.svg';
 import { Typography } from '../typography';
+import SoftGlow from '@/assets/images/background/soft-glow.svg';
 
 type AppLayoutProps = {
   sidebar: ReactNode;
@@ -25,7 +26,12 @@ export function AppLayout({ sidebar, children, footer }: AppLayoutProps) {
           <Typography font="secondary" variant="caption">Version: {APP_VERSION}</Typography>
         </div>
       </aside>
-      <main className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-background text-foreground">
+      {/* `isolate` lets the glow sit at -z-10: above main's background, behind the page content. */}
+      <main className="relative isolate flex min-w-0 flex-1 flex-col overflow-y-auto bg-background text-foreground">
+        {/* An imported .svg is a URL (Vite), so it goes in an <img>, not used as a component. */}
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+          <img src={SoftGlow} alt="" className="absolute top-0 right-0" />
+        </div>
         {children}
         {footer != null && (
           <div className="mt-auto py-[24px] px-[48px] flex flex-row items-center justify-between border-t border-divider">

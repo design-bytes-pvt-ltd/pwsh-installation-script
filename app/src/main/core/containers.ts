@@ -233,6 +233,12 @@ export function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+/** Elapsed time as progress text: "45s", "2m 10s". */
+export function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
 /** One line of `docker compose --progress json pull`. Layer lines carry `parent_id` (the image). */
 export interface ComposeProgressEvent {
   id?: string;
@@ -243,6 +249,9 @@ export interface ComposeProgressEvent {
   current?: number;
   total?: number;
   percent?: number;
+  /** Set on failure lines: `{"error":true,"message":"..."}`. */
+  error?: boolean;
+  message?: string;
 }
 
 export function parseComposeProgress(line: string): ComposeProgressEvent | null {
@@ -255,91 +264,356 @@ export function parseComposeProgress(line: string): ComposeProgressEvent | null 
   }
 }
 
+export interface PullStatus {
+  label: string;
+  percent: number;
+}
+
+/** Share of the bar for downloading; unpacking fills the rest. */
+const DOWNLOAD_BAND = 90;
+/** Assumed speed for the estimate shown when Docker reports no byte counts. */
+const ESTIMATE_BYTES_PER_SEC = 4e6;
+/** Estimate time constant when not even the image size is known. */
+const ESTIMATE_DEFAULT_TAU_MS = 180_000;
+
+interface LayerState {
+  current: number;
+  size?: number;
+  downloaded: boolean;
+  extracted: boolean;
+  /** Already on disk before this pull: left out of the totals. */
+  preexisting: boolean;
+}
+
 /**
- * Adds up per-layer download progress into one "X MB of Y MB" status. A layer's size is only known
- * once it starts downloading (Docker fetches a few at a time), so the total can grow during the
- * pull; the percentage never goes backwards so the bar doesn't jump.
+ * Turns `docker compose --progress json pull` events into one status for the progress bar.
+ *
+ * What Compose reports varies a lot: for some registries every layer reports its bytes, for others
+ * (ghcr.io with the containerd image store) only "Pulling" and "Pulled" arrive, minutes apart. So:
+ * - layer sizes come from the registry manifest when known (`setExpectedLayers`), else from events;
+ * - bytes are counted from "Downloading" events and from finished layers;
+ * - without any byte counts, `tick()` shows an estimate that slows down and stops below 90%;
+ * - downloading fills 0–90%, unpacking 90–100%, and the percentage never goes backwards.
  */
 export class PullProgressTracker {
-  private readonly layers = new Map<string, { current: number; total: number }>();
+  private readonly layers = new Map<string, LayerState>();
+  private expected = new Map<string, number>();
+  private image: { current: number; total: number } | null = null;
+  /** True once Docker reported live byte counts; the estimate then stops. */
+  private sawBytes = false;
   private extracting = false;
+  private elapsedMs = 0;
   private maxPercent = 0;
+  private last: PullStatus | null = null;
+  private readonly counts = new Map<string, number>();
 
-  /** Applies one event. Returns the status to show when it changed anything, else null. */
-  update(event: ComposeProgressEvent): { label: string; percent: number } | null {
-    if (!event.id || !event.parent_id) return null;
-    const layer = this.layers.get(event.id);
-    if (event.text === 'Downloading' && typeof event.total === 'number' && event.total > 0) {
-      this.layers.set(event.id, { current: Math.min(Math.max(event.current ?? 0, 0), event.total), total: event.total });
-    } else if ((event.text === 'Download complete' || event.text === 'Pull complete') && layer) {
-      layer.current = layer.total;
-    } else if (event.text === 'Extracting') {
+  /** Applies one event. Returns the status to show when it changed, else null. */
+  update(event: ComposeProgressEvent): PullStatus | null {
+    if (!event.id) return null;
+    const text = (event.text ?? '').trim().toLowerCase();
+    if (event.text) this.counts.set(event.text, (this.counts.get(event.text) ?? 0) + 1);
+    if (!event.parent_id) return this.updateImage(event);
+    if (this.expected.size > 0 && !this.expected.has(event.id)) return null;
+
+    const layer = this.layer(event.id);
+    if (text === 'already exists' || text === 'exists') {
+      // A retry reports layers it finished earlier as existing: keep counting those.
+      if (!layer.downloaded) layer.preexisting = true;
+    } else if (text === 'downloading') {
+      if (typeof event.total === 'number' && event.total > 0 && !this.expected.has(event.id)) layer.size = event.total;
+      if (typeof event.current === 'number' && event.current > 0) {
+        layer.current = layer.size ? Math.min(event.current, layer.size) : event.current;
+        this.sawBytes = true;
+      }
+    } else if (text === 'verifying checksum' || text === 'download complete') {
+      layer.downloaded = true;
+    } else if (text === 'extracting') {
+      layer.downloaded = true;
       this.extracting = true;
-    } else {
-      return null;
+    } else if (text === 'pull complete') {
+      layer.downloaded = true;
+      layer.extracted = true;
     }
-    return this.status();
+    // "Pulling fs layer", "Waiting": the layer is registered, nothing else to do.
+    return this.publish(false);
+  }
+
+  /** Sets layer sizes (short id -> bytes) from the registry manifest, which fixes the total up front. */
+  setExpectedLayers(sizes: Map<string, number>): PullStatus | null {
+    if (sizes.size === 0) return null;
+    this.expected = sizes;
+    for (const [id, size] of sizes) {
+      const layer = this.layers.get(id);
+      if (layer) layer.size = size;
+    }
+    return this.publish(false);
+  }
+
+  /** Advances the time-based estimate. Call about once a second while the pull runs. */
+  tick(elapsedMs: number): PullStatus | null {
+    this.elapsedMs = Math.max(this.elapsedMs, elapsedMs);
+    return this.publish(true);
   }
 
   get downloadedBytes(): number {
-    let sum = 0;
-    for (const l of this.layers.values()) sum += l.current;
-    return sum;
+    return this.measure().done;
   }
 
-  private status(): { label: string; percent: number } | null {
+  /** Event counts by text, for the log: "Pulling×1, Pulled×1". */
+  summary(): string {
+    return [...this.counts].map(([text, n]) => `${text}×${n}`).join(', ');
+  }
+
+  private layer(id: string): LayerState {
+    let layer = this.layers.get(id);
+    if (!layer) {
+      layer = { current: 0, size: this.expected.get(id), downloaded: false, extracted: false, preexisting: false };
+      this.layers.set(id, layer);
+    }
+    return layer;
+  }
+
+  private updateImage(event: ComposeProgressEvent): PullStatus | null {
+    if (typeof event.total !== 'number' || event.total <= 0 || typeof event.current !== 'number') return null;
+    this.image = { current: Math.min(Math.max(event.current, 0), event.total), total: event.total };
+    if (event.current > 0) this.sawBytes = true;
+    return this.publish(false);
+  }
+
+  /** The layers this pull fetches: the manifest's when known, else every layer seen so far. */
+  private measure(): { done: number; total: number; layers: number; downloaded: number; extracted: number } {
+    const fetch: LayerState[] = [];
+    if (this.expected.size > 0) {
+      for (const [id, size] of this.expected) {
+        const layer = this.layers.get(id) ?? { current: 0, size, downloaded: false, extracted: false, preexisting: false };
+        if (!layer.preexisting) fetch.push(layer);
+      }
+    } else {
+      for (const layer of this.layers.values()) if (!layer.preexisting) fetch.push(layer);
+    }
+    let done = 0;
     let total = 0;
-    for (const l of this.layers.values()) total += l.total;
-    if (total === 0) return null;
-    const done = this.downloadedBytes;
-    this.maxPercent = Math.max(this.maxPercent, Math.floor((done / total) * 100));
-    if (done >= total && this.extracting) return { label: 'Unpacking the dev container...', percent: 100 };
-    return { label: `Downloading the dev container: ${formatBytes(done)} of ${formatBytes(total)}`, percent: this.maxPercent };
+    let downloaded = 0;
+    let extracted = 0;
+    for (const l of fetch) {
+      if (l.downloaded) downloaded++;
+      if (l.extracted) extracted++;
+      if (!l.size) continue;
+      total += l.size;
+      done += l.downloaded ? l.size : Math.min(l.current, l.size);
+    }
+    if (fetch.length === 0 && this.image) return { done: this.image.current, total: this.image.total, layers: 0, downloaded: 0, extracted: 0 };
+    return { done, total, layers: fetch.length, downloaded, extracted };
+  }
+
+  private estimatePercent(totalBytes: number): number {
+    if (this.sawBytes || this.elapsedMs <= 0) return 0;
+    const tau = totalBytes > 0 ? (totalBytes / ESTIMATE_BYTES_PER_SEC) * 1000 : ESTIMATE_DEFAULT_TAU_MS;
+    return DOWNLOAD_BAND * (1 - Math.exp(-this.elapsedMs / tau));
+  }
+
+  private compute(): PullStatus | null {
+    const m = this.measure();
+    const allDownloaded = m.layers > 0 ? m.downloaded >= m.layers : m.total > 0 && m.done >= m.total;
+    if (allDownloaded && (this.extracting || m.extracted > 0)) {
+      const share = m.layers > 0 ? m.extracted / m.layers : 0;
+      return { label: 'Unpacking the dev container...', percent: DOWNLOAD_BAND + (100 - DOWNLOAD_BAND) * share };
+    }
+    const real = m.total > 0 ? (m.done / m.total) * DOWNLOAD_BAND : 0;
+    const percent = Math.max(real, this.estimatePercent(m.total));
+    if (m.done > 0) return { label: `Downloading the dev container: ${formatBytes(m.done)} of ${formatBytes(m.total)}`, percent };
+    if (m.total === 0 && m.downloaded > 0) {
+      return { label: `Downloading the dev container: ${m.downloaded} of ${m.layers} layers`, percent };
+    }
+    if (this.sawBytes || this.elapsedMs <= 0) return null;
+    const size = m.total > 0 ? ` (${formatBytes(m.total)})` : '';
+    return { label: `Downloading the dev container${size}... ${formatElapsed(this.elapsedMs)}`, percent };
+  }
+
+  private publish(fromTick: boolean): PullStatus | null {
+    const next = this.compute();
+    if (!next) return null;
+    this.maxPercent = Math.min(100, Math.max(this.maxPercent, Math.floor(next.percent)));
+    const status = { label: next.label, percent: this.maxPercent };
+    // A tick with nothing new is not worth an event.
+    if (fromTick && this.last && this.last.label === status.label && this.last.percent === status.percent) return null;
+    this.last = status;
+    return status;
   }
 }
 
-/** Older Docker Compose versions have no `--progress json`. */
-const NO_JSON_PROGRESS = /unknown flag: --progress|invalid progress|unsupported progress/i;
+/**
+ * Sends at most one value per `intervalMs`, but always the latest one: a value that arrives too soon
+ * is held and sent when the interval ends. A change of phase goes out at once.
+ */
+export function createThrottle<T>(send: (value: T) => void, intervalMs: number, phaseOf: (value: T) => string) {
+  let lastSent = 0;
+  let lastPhase: string | undefined;
+  let pending: { value: T } | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
-/** Pulls the compose images, reporting downloaded bytes as progress. Falls back to plain output on old Compose. */
-async function pullImages(
+  const sendNow = (value: T) => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    pending = null;
+    lastSent = Date.now();
+    lastPhase = phaseOf(value);
+    send(value);
+  };
+
+  return {
+    push(value: T): void {
+      const elapsed = Date.now() - lastSent;
+      if (phaseOf(value) !== lastPhase || elapsed >= intervalMs) return sendNow(value);
+      pending = { value };
+      timer ??= setTimeout(() => pending && sendNow(pending.value), intervalMs - elapsed);
+    },
+    /** Sends the held value, if any. Call when done. */
+    flush(): void {
+      if (pending) sendNow(pending.value);
+    },
+  };
+}
+
+/** Parses `docker manifest inspect --verbose` output into layer sizes by short id (12 hex digits). */
+export function parseManifestLayers(raw: unknown, platform: { os: string; architecture: string }): Map<string, number> | null {
+  const entries = (Array.isArray(raw) ? raw : [raw]).filter((e): e is Record<string, any> => Boolean(e) && typeof e === 'object');
+  const entry =
+    entries.length === 1
+      ? entries[0]
+      : entries.find((e) => e.Descriptor?.platform?.os === platform.os && e.Descriptor?.platform?.architecture === platform.architecture);
+  const layers: unknown = (entry?.OCIManifest ?? entry?.SchemaV2Manifest)?.layers;
+  if (!Array.isArray(layers)) return null;
+  const sizes = new Map<string, number>();
+  for (const layer of layers) {
+    const hex = typeof layer?.digest === 'string' ? layer.digest.split(':')[1] : undefined;
+    if (hex && typeof layer.size === 'number' && layer.size > 0) sizes.set(hex.slice(0, 12), layer.size);
+  }
+  return sizes.size > 0 ? sizes : null;
+}
+
+/** "linux/amd64" -> { os, architecture }; defaults to Linux on this machine's architecture. */
+export function parsePlatform(value: string | undefined, arch: string = process.arch): { os: string; architecture: string } {
+  const [os, architecture] = (value ?? '').split('/');
+  if (os && architecture) return { os, architecture };
+  return { os: 'linux', architecture: arch === 'x64' ? 'amd64' : arch };
+}
+
+const LAYER_SIZE_TIMEOUT_MS = 20_000;
+
+/**
+ * Layer sizes of every image in the compose file, read from the registry. Best effort: null when
+ * the registry or the docker CLI can't tell (old CLI, no manifest support, timeout).
+ */
+export async function fetchLayerSizes(
+  cli: string,
+  composePath: string,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal
+): Promise<Map<string, number> | null> {
+  const opts = { env, signal: AbortSignal.any([signal, AbortSignal.timeout(LAYER_SIZE_TIMEOUT_MS)]) };
+  const config = JSON.parse((await execCommand(cli, buildComposeArgs(composePath, 'config', '--format', 'json'), opts)).stdout);
+  const services = Object.values((config?.services ?? {}) as Record<string, { image?: string; platform?: string }>);
+  const sizes = new Map<string, number>();
+  for (const service of services) {
+    if (!service.image) continue;
+    const res = await execCommand(cli, ['manifest', 'inspect', '--verbose', service.image], opts);
+    const layers = parseManifestLayers(JSON.parse(res.stdout), parsePlatform(service.platform));
+    if (!layers) return null;
+    for (const [id, size] of layers) sizes.set(id, size);
+  }
+  return sizes.size > 0 ? sizes : null;
+}
+
+/** Older Docker Compose versions have no `--progress json`. */
+export const NO_JSON_PROGRESS = /unknown flag: --progress|invalid progress|unsupported (--)?progress/i;
+/** Network trouble worth another try: Docker resumes the layers it already has. */
+export const TRANSIENT_PULL_ERROR =
+  /context deadline exceeded|i\/o timeout|TLS handshake timeout|connection reset|connection refused|unexpected EOF|net\/http: request canceled|toomanyrequests|\b50[234]\b/i;
+const PERMANENT_PULL_ERROR = /unauthorized|denied|manifest unknown|not found/i;
+
+export function isTransientPullError(output: string): boolean {
+  return TRANSIENT_PULL_ERROR.test(output) && !PERMANENT_PULL_ERROR.test(output);
+}
+
+const PULL_RETRY_DELAYS_MS = [3_000, 10_000];
+
+/**
+ * Pulls the compose images with progress on the Containers bar. Retries network failures, and falls
+ * back to plain output on Compose versions without `--progress json`.
+ */
+export async function pullImages(
   cli: string,
   composePath: string,
   exec: { env: NodeJS.ProcessEnv; signal?: AbortSignal },
-  emit: (event: InstallEvent) => void
+  emit: (event: InstallEvent) => void,
+  retryDelaysMs: number[] = PULL_RETRY_DELAYS_MS
 ): Promise<void> {
-  const progress = (label: string, percent?: number) => emit({ type: 'progress', step: 'Containers', label, percent });
   const output = (line: string) => emit(logEvent(line, 'info', true));
   const tracker = new PullProgressTracker();
-  let lastEmit = 0;
-  let lastLabel = '';
+  const throttle = createThrottle<PullStatus>(
+    (s) => emit({ type: 'progress', step: 'Containers', label: s.label, percent: s.percent }),
+    250,
+    (s) => (s.label.startsWith('Unpacking') ? 'unpack' : 'download')
+  );
+  const show = (status: PullStatus | null) => {
+    if (status) throttle.push(status);
+  };
 
   const onOutput = (line: string) => {
     const event = parseComposeProgress(line);
     if (!event) return output(line);
     if (!event.parent_id) {
       // Image-level lines ("Pulling", "Pulled", errors) are worth keeping in the log.
-      return output([event.id, event.text, event.details].filter(Boolean).join(' '));
+      const text = [event.id, event.text, event.details, event.message].filter(Boolean).join(' ');
+      if (text) emit(logEvent(text, event.error ? 'error' : 'info', true));
     }
-    const status = tracker.update(event);
-    if (!status) return;
-    // At most a few updates a second, but never drop a change of phase (download -> unpack).
-    const now = Date.now();
-    const phase = status.label.split(':')[0];
-    if (now - lastEmit < 250 && phase === lastLabel) return;
-    lastEmit = now;
-    lastLabel = phase;
-    progress(status.label, status.percent);
+    show(tracker.update(event));
   };
 
-  progress('Downloading the dev container...', 0);
+  emit({ type: 'progress', step: 'Containers', label: 'Downloading the dev container...', percent: 0 });
+  const started = Date.now();
+  const finished = new AbortController();
+  const sizesSignal = exec.signal ? AbortSignal.any([exec.signal, finished.signal]) : finished.signal;
+  void fetchLayerSizes(cli, composePath, exec.env, sizesSignal).then(
+    (sizes) => {
+      if (finished.signal.aborted) return;
+      if (!sizes) return emit(logEvent('The registry did not report the image size; the download progress is an estimate.', 'warn'));
+      let total = 0;
+      for (const size of sizes.values()) total += size;
+      emit(logEvent(`The dev container is ${formatBytes(total)} in ${sizes.size} layers.`));
+      show(tracker.setExpectedLayers(sizes));
+    },
+    (err) => {
+      if (!finished.signal.aborted) emit(logEvent(`Could not read the image size: ${(err as Error)?.message ?? String(err)}`, 'warn'));
+    }
+  );
+  const heartbeat = setInterval(() => show(tracker.tick(Date.now() - started)), 1_000);
+
   try {
-    await execCommand(cli, buildComposeArgs(composePath, '--progress', 'json', 'pull'), { ...exec, onOutput });
-  } catch (err) {
-    if (!(err instanceof CommandError) || !NO_JSON_PROGRESS.test(err.outputTail.join('\n'))) throw err;
-    emit(logEvent('This Docker Compose cannot report download progress; pulling without it.', 'warn'));
-    await execCommand(cli, buildComposeArgs(composePath, 'pull'), { ...exec, onOutput: output });
-    return;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await execCommand(cli, buildComposeArgs(composePath, '--progress', 'json', 'pull'), { ...exec, onOutput });
+        break;
+      } catch (err) {
+        if (exec.signal?.aborted || !(err instanceof CommandError)) throw err;
+        const tail = err.outputTail.join('\n');
+        if (NO_JSON_PROGRESS.test(tail)) {
+          emit(logEvent('This Docker Compose cannot report download progress; pulling without it.', 'warn'));
+          await execCommand(cli, buildComposeArgs(composePath, 'pull'), { ...exec, onOutput: output });
+          break;
+        }
+        if (attempt > retryDelaysMs.length || !isTransientPullError(tail)) throw err;
+        emit(logEvent(`Network problem while downloading; retrying (${attempt + 1} of ${retryDelaysMs.length + 1})...`, 'warn'));
+        await delay(retryDelaysMs[attempt - 1], exec.signal);
+      }
+    }
+  } finally {
+    finished.abort();
+    clearInterval(heartbeat);
+    throttle.flush();
+    const events = tracker.summary();
+    if (events) emit(logEvent(`Pull events: ${events}`));
   }
   if (tracker.downloadedBytes > 0) emit(logEvent(`Downloaded ${formatBytes(tracker.downloadedBytes)}.`));
 }

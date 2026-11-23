@@ -10,12 +10,18 @@ import { parsePullLine } from '../ollama';
 import { execCommand, LineSplitter } from '../exec';
 import {
   buildComposeArgs,
+  createThrottle,
   dockerCliCandidates,
   dockerEnv,
   formatBytes,
+  formatElapsed,
+  isTransientPullError,
   loadRegistryCredentials,
+  NO_JSON_PROGRESS,
   parseComposeProgress,
   parseContainerState,
+  parseManifestLayers,
+  parsePlatform,
   PullProgressTracker,
   resolveDockerCli,
 } from '../containers';
@@ -387,14 +393,165 @@ describe('dev container pull progress', () => {
   it('adds up layers into MB of MB, then reports unpacking', () => {
     const tracker = new PullProgressTracker();
     const statuses = lines.map((l) => tracker.update(parseComposeProgress(l)!));
-    // Image lines, "Pulling fs layer" and a completed layer of unknown size change nothing.
-    expect(statuses.slice(0, 3)).toEqual([null, null, null]);
+    // Image lines and "Pulling fs layer" change nothing.
+    expect(statuses.slice(0, 2)).toEqual([null, null]);
+    // A finished layer of unknown size counts as a layer, not as bytes.
+    expect(statuses[2]).toEqual({ label: 'Downloading the dev container: 1 of 2 layers', percent: 0 });
+    // Downloading fills 0–90% of the bar; unpacking the rest.
     expect(statuses[3]).toEqual({ label: 'Downloading the dev container: 1.0 MB of 28 MB', percent: 3 });
     // A second layer starts: the total grows, but the bar does not go back.
     expect(statuses[4]).toEqual({ label: 'Downloading the dev container: 1.0 MB of 100 MB', percent: 3 });
-    expect(statuses[5]).toEqual({ label: 'Downloading the dev container: 28 MB of 100 MB', percent: 28 });
-    expect(statuses[6]).toEqual({ label: 'Downloading the dev container: 100 MB of 100 MB', percent: 100 });
-    expect(statuses[7]).toEqual({ label: 'Unpacking the dev container...', percent: 100 });
+    expect(statuses[5]).toEqual({ label: 'Downloading the dev container: 28 MB of 100 MB', percent: 25 });
+    expect(statuses[6]).toEqual({ label: 'Downloading the dev container: 100 MB of 100 MB', percent: 90 });
+    expect(statuses[7]).toEqual({ label: 'Unpacking the dev container...', percent: 90 });
     expect(tracker.downloadedBytes).toBe(100_000_000);
+    // Real byte counts arrived, so the time-based estimate stays out of it.
+    expect(tracker.tick(600_000)).toBeNull();
+    expect(tracker.summary()).toBe('Pulling×1, Pulling fs layer×1, Download complete×3, Downloading×2, Extracting×1');
+  });
+
+  // ghcr.io with the containerd image store (Docker 29, Compose v5.6): no layer lines at all.
+  const ghcr = fs
+    .readFileSync(path.join(__dirname, 'fixtures', 'compose-pull-ghcr.jsonl'), 'utf8')
+    .split('\n')
+    .filter(Boolean);
+  const imageSizes = new Map([
+    ['26538842dfbf', 1_000_000_000],
+    ['f4dcb41a3ef3', 3_000_000_000],
+  ]);
+  const layer = (id: string, text: string, extra: Record<string, number> = {}) =>
+    ({ id, parent_id: 'Image ghcr.io/x:latest', text, ...extra }) as const;
+
+  it('estimates progress when Compose reports nothing but Pulling and Pulled', () => {
+    const tracker = new PullProgressTracker();
+    expect(ghcr.map((l) => tracker.update(parseComposeProgress(l)!))).toEqual([null, null]);
+    // Before the first tick nothing is known; then the estimate shows the elapsed time.
+    expect(tracker.tick(1_000)).toEqual({ label: 'Downloading the dev container... 1s', percent: 0 });
+    expect(tracker.tick(1_000)).toBeNull();
+    const withSize = tracker.setExpectedLayers(imageSizes)!;
+    expect(withSize.label).toBe('Downloading the dev container (4.00 GB)... 1s');
+
+    const percents: number[] = [];
+    for (let s = 10; s <= 7200; s += 10) percents.push(tracker.tick(s * 1000)?.percent ?? percents.at(-1)!);
+    expect(percents.at(0)).toBeGreaterThanOrEqual(0);
+    expect(percents.some((p) => p > 0)).toBe(true);
+    for (let i = 1; i < percents.length; i++) expect(percents[i]).toBeGreaterThanOrEqual(percents[i - 1]);
+    expect(Math.max(...percents)).toBeLessThan(90);
+    expect(tracker.tick(130_000 * 1000)?.label).toBe('Downloading the dev container (4.00 GB)... 2166m 40s');
+  });
+
+  it('counts finished layers by their manifest size, even without Downloading lines', () => {
+    const tracker = new PullProgressTracker();
+    tracker.setExpectedLayers(imageSizes);
+    // Regression: "Download complete" for a layer never seen downloading used to be ignored.
+    expect(tracker.update(layer('26538842dfbf', 'Download complete'))).toEqual({
+      label: 'Downloading the dev container: 1.00 GB of 4.00 GB',
+      percent: 22,
+    });
+    // Layers that are not in the manifest (config blobs) are ignored.
+    expect(tracker.update(layer('b58a8dcf7a46', 'Download complete'))).toBeNull();
+    expect(tracker.update(layer('f4dcb41a3ef3', 'Pull complete'))?.percent).toBe(95);
+    expect(tracker.update(layer('26538842dfbf', 'Pull complete'))).toEqual({ label: 'Unpacking the dev container...', percent: 100 });
+  });
+
+  it('uses the manifest total from the start, and leaves out layers already on disk', () => {
+    const tracker = new PullProgressTracker();
+    tracker.setExpectedLayers(imageSizes);
+    expect(tracker.update(layer('26538842dfbf', 'Already exists'))).toBeNull();
+    expect(tracker.update(layer('f4dcb41a3ef3', 'Downloading', { current: 1_500_000_000, total: 1 }))).toEqual({
+      label: 'Downloading the dev container: 1.50 GB of 3.00 GB',
+      percent: 45,
+    });
+  });
+
+  it('keeps counting a layer that a retry reports as existing', () => {
+    const tracker = new PullProgressTracker();
+    tracker.update(layer('aaaaaaaaaaaa', 'Downloading', { current: 50, total: 100 }));
+    tracker.update(layer('bbbbbbbbbbbb', 'Downloading', { current: 0, total: 100 }));
+    tracker.update(layer('aaaaaaaaaaaa', 'Download complete'));
+    expect(tracker.update(layer('aaaaaaaaaaaa', 'Already exists'))?.label).toBe('Downloading the dev container: 100 B of 200 B');
+  });
+
+  it('gives way to real numbers without going backwards', () => {
+    const tracker = new PullProgressTracker();
+    tracker.setExpectedLayers(imageSizes);
+    const estimated = tracker.tick(600_000)!.percent;
+    expect(estimated).toBeGreaterThan(10);
+    // Real bytes below the estimate: the bar holds, and the estimate stops.
+    const real = tracker.update(layer('26538842dfbf', 'Downloading', { current: 100_000_000, total: 1 }))!;
+    expect(real).toEqual({ label: 'Downloading the dev container: 100 MB of 4.00 GB', percent: estimated });
+    expect(tracker.tick(1_200_000)).toBeNull();
+  });
+
+  it('uses image-level byte counts when there are no layer lines', () => {
+    const tracker = new PullProgressTracker();
+    expect(tracker.update({ id: 'Image x', text: 'Pulling', current: 250, total: 1000 })).toEqual({
+      label: 'Downloading the dev container: 250 B of 1 KB',
+      percent: 22,
+    });
+  });
+
+  it('reads layer sizes from `docker manifest inspect --verbose`', () => {
+    const amd64 = { os: 'linux', architecture: 'amd64' };
+    const manifest = (arch: string, layers: { digest: string; size: number }[]) => ({
+      Descriptor: { platform: { os: arch === 'unknown' ? 'unknown' : 'linux', architecture: arch } },
+      OCIManifest: { config: { digest: 'sha256:cfg', size: 10 }, layers },
+    });
+    const index = [
+      manifest('amd64', [{ digest: `sha256:${'a'.repeat(64)}`, size: 100 }]),
+      manifest('unknown', [{ digest: `sha256:${'b'.repeat(64)}`, size: 1067 }]),
+    ];
+    expect(parseManifestLayers(index, amd64)).toEqual(new Map([['aaaaaaaaaaaa', 100]]));
+    expect(parseManifestLayers(index, { os: 'linux', architecture: 'arm64' })).toBeNull();
+    // A single-platform image comes back as one object, sometimes as SchemaV2Manifest.
+    const single = { Descriptor: {}, SchemaV2Manifest: { layers: [{ digest: `sha256:${'c'.repeat(64)}`, size: 5 }] } };
+    expect(parseManifestLayers(single, amd64)).toEqual(new Map([['cccccccccccc', 5]]));
+    expect(parseManifestLayers('garbage', amd64)).toBeNull();
+    expect(parseManifestLayers(null, amd64)).toBeNull();
+    expect(parsePlatform('linux/amd64')).toEqual(amd64);
+    expect(parsePlatform(undefined, 'x64')).toEqual(amd64);
+    expect(parsePlatform(undefined, 'arm64')).toEqual({ os: 'linux', architecture: 'arm64' });
+  });
+
+  it('tells network trouble from permanent failures', () => {
+    const deadline =
+      '{"error":true,"message":"failed to do request: Get \\"https://ghcr.io/v2/design-bytes-pvt-ltd/ubuntu-nix-hm/manifests/sha256-d09a\\": context deadline exceeded"}';
+    expect(isTransientPullError(deadline)).toBe(true);
+    expect(isTransientPullError('net/http: TLS handshake timeout')).toBe(true);
+    expect(isTransientPullError('received unexpected HTTP status: 503 Service Unavailable')).toBe(true);
+    expect(isTransientPullError('Error response from daemon: error from registry: unauthorized')).toBe(false);
+    expect(isTransientPullError('manifest unknown')).toBe(false);
+    expect(NO_JSON_PROGRESS.test('unsupported --progress value "json"')).toBe(true);
+    expect(NO_JSON_PROGRESS.test('unknown flag: --progress')).toBe(true);
+  });
+
+  it('formats elapsed time', () => {
+    expect(formatElapsed(0)).toBe('0s');
+    expect(formatElapsed(45_900)).toBe('45s');
+    expect(formatElapsed(130_000)).toBe('2m 10s');
+  });
+});
+
+describe('createThrottle', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('sends the latest value after the interval and phase changes at once', () => {
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    const throttle = createThrottle<string>((v) => sent.push(v), 250, (v) => v[0]);
+    throttle.push('d1');
+    throttle.push('d2');
+    throttle.push('d3');
+    expect(sent).toEqual(['d1']);
+    vi.advanceTimersByTime(250);
+    expect(sent).toEqual(['d1', 'd3']);
+    throttle.push('d4');
+    throttle.push('u1');
+    expect(sent).toEqual(['d1', 'd3', 'u1']);
+    vi.advanceTimersByTime(1000);
+    expect(sent).toEqual(['d1', 'd3', 'u1']);
+    throttle.push('u2');
+    throttle.flush();
+    expect(sent).toEqual(['d1', 'd3', 'u1', 'u2']);
   });
 });
