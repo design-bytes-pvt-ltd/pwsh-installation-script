@@ -78,6 +78,8 @@ export interface FailureSummary {
   step: string;
   summary: string;
   hint?: string;
+  /** Id of the matched hint (e.g. "network"), used to build the error code shown to the user. */
+  hintId?: string;
 }
 export type StepStatus = 'running' | 'done' | 'skipped' | 'failed' | 'cancelled';
 

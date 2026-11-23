@@ -3,7 +3,8 @@ import { AppLayout } from '@/components/layout';
 import { Typography } from '@/components/typography';
 import { Button } from '@/components/button';
 import { Stepper } from '@/components/stepper';
-import { useInstallerEvents } from '@/features/install';
+import { installOutcome, useInstallerEvents } from '@/features/install';
+import { InstallCancelledPage, InstallFailedPage } from '@/pages';
 import { installerApi } from '@/services/installerApi';
 import { useAppState } from '@/store';
 import Logo from '@/assets/images/logo/kirloskar-logo.svg';
@@ -35,6 +36,35 @@ export function App() {
   useEffect(() => {
     if (advanceTo) setStepId(advanceTo);
   }, [advanceTo]);
+
+  // A cancelled or failed install ends on its own page, still under the Install step.
+  const outcome = stepId === 'install' ? installOutcome(state.install) : null;
+
+  if (outcome) {
+    const Content = outcome === 'cancelled' ? InstallCancelledPage : InstallFailedPage;
+    return (
+      <AppLayout
+        sidebar={<SidebarContent stepId={stepId} />}
+        footer={
+          <>
+            {outcome === 'failed' ? (
+              <Button variant="secondary" onClick={() => void installerApi.showLog()}>
+                View log
+              </Button>
+            ) : (
+              // Keeps Exit on the right: the footer spreads its children to both ends.
+              <span />
+            )}
+            <Button onClick={() => void installerApi.quit()}>Exit</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col flex-1 items-start px-[48px] py-[26px]">
+          <Content />
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout

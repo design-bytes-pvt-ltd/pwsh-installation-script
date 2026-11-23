@@ -7,3 +7,4 @@ export { StepList } from './components/StepList';
 export { progressCaption, resultTone, stepLabel, stepSegment, stepTone, summaryTitle } from './status';
 export { useInstallActions } from './useInstallActions';
 export { useInstallerEvents } from './useInstallerEvents';
+export { errorCode, failedStepPhrase, installOutcome, type InstallOutcome } from './outcome';

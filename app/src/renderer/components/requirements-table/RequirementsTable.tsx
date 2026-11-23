@@ -1,5 +1,5 @@
 import type { ComponentProps, ReactNode } from 'react';
-import { CircleCheck, CircleX, Info, TriangleAlert, type LucideIcon } from 'lucide-react';
+import { Check, CircleCheck, CircleX, Info, TriangleAlert, X, type LucideIcon } from 'lucide-react';
 import { cva } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 import { Typography } from '../typography';
@@ -33,8 +33,8 @@ type RequirementsTableProps = Omit<ComponentProps<'ul'>, 'children'> & {
  */
 
 const STATUS_ICON: Record<RequirementStatus, LucideIcon> = {
-  passed: CircleCheck,
-  failed: CircleX,
+  passed: Check,
+  failed: X,
   warning: TriangleAlert,
   info: Info,
 };
@@ -46,23 +46,22 @@ const DEFAULT_RESULT: Record<RequirementStatus, string> = {
   info: '',
 };
 
-const rowVariants = cva('flex flex-row items-center justify-between gap-[14px] rounded-[10px] px-[16px] py-[10px]', {
-  variants: { status: { passed: '', failed: 'bg-destructive-subtle', warning: '', info: '' } },
-});
-
-const leadingIconVariants = cva('shrink-0', {
+// Plain rows are separated by a bottom border. Failed and warning rows are tinted, rounded cards
+// instead, so they drop the border.
+const rowVariants = cva('flex flex-row items-center justify-between gap-[14px] px-[16px] py-[10px]', {
   variants: {
     status: {
-      passed: 'text-subtle-foreground',
-      failed: 'text-destructive',
-      warning: 'text-subtle-foreground',
-      info: 'text-subtle-foreground',
+      passed: 'border-b border-divider',
+      failed: 'rounded-[10px] bg-destructive-subtle',
+      warning: 'rounded-[10px] bg-warning/10',
+      info: 'border-b border-divider',
     },
   },
 });
 
 const statusIconVariants = cva('shrink-0', {
   variants: {
+    bgStatus: { passed: 'bg-[#329D79]', failed: 'bg-[#E5484D]', warning: 'bg-warning/10', info: 'bg-subtle-foreground/10' },
     status: { passed: 'text-success', failed: 'text-destructive', warning: 'text-warning', info: 'text-subtle-foreground' },
   },
 });
@@ -70,8 +69,8 @@ const statusIconVariants = cva('shrink-0', {
 const resultVariants = cva('text-right', {
   variants: {
     status: {
-      passed: 'text-subtle-foreground',
-      failed: 'text-destructive',
+      passed: 'text-[#256156]',
+      failed: 'text-[#E5484D]',
       warning: 'text-foreground',
       info: 'text-subtle-foreground',
     },
@@ -91,14 +90,16 @@ function RequirementsTable({ requirements, className, ...props }: RequirementsTa
         return (
           <li key={id} data-status={status} className={rowVariants({ status })}>
             <div className="flex min-w-0 flex-row items-center gap-[14px]">
-              <Icon aria-hidden size={20} className={leadingIconVariants({ status })} />
-              <Typography variant="body" className="font-medium">
+              <Icon aria-hidden size={20} color="#55645E" />
+              <Typography variant="body">
                 {label}
               </Typography>
             </div>
 
             <div className="flex min-w-0 flex-row items-center gap-[8px]">
-              <StatusIcon aria-hidden size={20} className={statusIconVariants({ status })} />
+              <div aria-hidden className={cn(statusIconVariants({ bgStatus: status }), 'flex h-[20px] w-[20px] items-center justify-center rounded-full')}>
+                <StatusIcon aria-hidden size={12} color='#FFF' />
+              </div>
               <Typography variant="small" className={resultVariants({ status })}>
                 {result ?? DEFAULT_RESULT[status]}
               </Typography>

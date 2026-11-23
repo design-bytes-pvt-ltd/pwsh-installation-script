@@ -189,30 +189,57 @@ describe('App', () => {
     expect(fake.api.startInstall).toHaveBeenCalledTimes(1);
   });
 
-  test('a failed install stays on the Install step and offers Retry', async () => {
+  test('a failed install shows the error code and log path, with View log and Exit', async () => {
     await goToInstall();
     await waitFor(() => expect(fake.api.startInstall).toHaveBeenCalledTimes(1));
 
     await act(async () => {
-      fake.emit({ ...summary(1), failures: [{ step: 'Docker', summary: 'download failed', hint: 'Check your connection' }] });
+      fake.emit({
+        ...summary(1),
+        logPath: '/logs/install-1.log',
+        failures: [{ step: 'Models: llama3', summary: 'download failed', hint: 'Check your connection', hintId: 'network' }],
+      });
       fake.finishInstall();
     });
-    const alert = screen.getByRole('alert');
-    expect(within(alert).getByText('download failed')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: "Installation couldn't finish" })).toBeTruthy();
+    expect(
+      screen.getByText('Something went wrong while setting up the AI model. Your computer was left unchanged.')
+    ).toBeTruthy();
+    expect(screen.getByText('EB-MODELS-NETWORK')).toBeTruthy();
+    expect(screen.getByText('/logs/install-1.log')).toBeTruthy();
     expect(activeStep()?.textContent).toContain('Install');
 
-    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(fake.api.startInstall).toHaveBeenCalledTimes(2));
-    expect(fake.api.startInstall.mock.calls[1][0].models).toEqual(['llama3']);
+    fireEvent.click(footerButton('View log'));
+    expect(fake.api.showLog).toHaveBeenCalledTimes(1);
+    fireEvent.click(footerButton('Exit'));
+    expect(fake.api.quit).toHaveBeenCalledTimes(1);
+    expect(fake.api.startInstall).toHaveBeenCalledTimes(1);
   });
 
-  test('an install that cannot start offers Retry', async () => {
+  test('an install that cannot start shows the failure page', async () => {
     fake.api.startInstall.mockRejectedValueOnce(new Error('An installation is already running.'));
     await goToInstall();
-    await waitFor(() =>
-      expect(screen.getByText('Setup could not start: An installation is already running.')).toBeTruthy()
-    );
+    await waitFor(() => expect(screen.getByRole('heading', { name: "Installation couldn't finish" })).toBeTruthy());
+    expect(screen.getByText('EB-START-FAILED')).toBeTruthy();
+    expect(screen.queryByText('Log file')).toBeNull();
     expect(activeStep()?.textContent).toContain('Install');
+  });
+
+  test('a cancelled install shows the cancelled page with only Exit', async () => {
+    await goToInstall();
+    await waitFor(() => expect(fake.api.startInstall).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      fake.emit({ ...summary(1), cancelled: true });
+      fake.finishInstall();
+    });
+    expect(screen.getByRole('heading', { name: 'Installation cancelled' })).toBeTruthy();
+    expect(
+      screen.getByText('No changes were made to your computer. You can start again whenever you’re ready.')
+    ).toBeTruthy();
+    expect(within(screen.getByRole('main')).queryByRole('button', { name: 'View log' })).toBeNull();
+    fireEvent.click(footerButton('Exit'));
+    expect(fake.api.quit).toHaveBeenCalledTimes(1);
   });
 
   test('probes the system on launch and selects the default models', async () => {

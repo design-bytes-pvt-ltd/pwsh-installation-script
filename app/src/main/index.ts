@@ -12,6 +12,8 @@ let activeController: AbortController | null = null;
 let currentLogger: InstallLogger | null = null;
 let crashLogger: InstallLogger | null = null;
 let lastCrashDialog = 0;
+/** Set once the user chose to exit, so closing the window no longer asks about a running install. */
+let quitting = false;
 
 function appSource(): string {
   return `desktop app ${app.getVersion()} (Electron ${process.versions.electron}, Node ${process.versions.node})`;
@@ -135,7 +137,7 @@ function createWindow(): void {
 
   // Closing mid-install would orphan installers and leave tools half-installed.
   mainWindow.on('close', (event) => {
-    if (!activeController || !mainWindow) return;
+    if (quitting || !activeController || !mainWindow) return;
     const choice = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
       buttons: ['Keep installing', 'Cancel and quit'],
@@ -144,8 +146,10 @@ function createWindow(): void {
       message: 'An installation is still running.',
       detail: 'Quitting now may leave Ollama or Docker partly installed.',
     });
-    if (choice === 0) event.preventDefault();
-    else activeController.abort();
+    // Either way the window stays open: cancelling stops the run, and the renderer then shows the
+    // "Installation cancelled" page, whose Exit button closes the installer.
+    event.preventDefault();
+    if (choice !== 0) activeController.abort();
   });
 }
 
@@ -193,6 +197,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('app:quit', () => {
+    quitting = true;
     activeController?.abort();
     app.quit();
   });

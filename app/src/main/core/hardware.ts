@@ -5,7 +5,7 @@ import { commandExists, getArch, getTargetOS } from './platform';
 import type { Arch, DiskInfo, GpuInfo, ModelBudget, TargetOS } from '../../shared/types';
 
 /** Free space Ollama, the model and Docker need, in GB. */
-export const REQUIRED_DISK_GB = 111160;
+export const REQUIRED_DISK_GB = 60;
 
 export type { GpuInfo };
 

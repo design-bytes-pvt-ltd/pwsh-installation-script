@@ -194,7 +194,7 @@ export async function runInstall(
     exitCode: hasFailures || cancelled ? 1 : 0,
     cancelled,
     logPath: logger?.filePath,
-    failures: reports.map((r) => ({ step: r.step, summary: r.summary, hint: r.hint })),
+    failures: reports.map((r) => ({ step: r.step, summary: r.summary, hint: r.hint, hintId: r.hintId })),
   });
 }
 

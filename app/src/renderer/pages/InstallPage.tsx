@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { Button } from '@/components/button';
 import { Typography } from '@/components/typography';
 import { SegmentedProgress } from '@/components/segmented-progress';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { FailureList, LogViewer, progressCaption, stepSegment, useInstallActions } from '@/features/install';
+import { LogViewer, progressCaption, stepSegment, useInstallActions } from '@/features/install';
 import { recommendedModel } from '@/features/models';
-import { useTimedText } from '@/hooks/useTimedText';
 import { STEP_NAMES, useAppState } from '@/store';
 import type { StepName } from '../../shared/types';
 
@@ -18,9 +16,8 @@ const SEGMENT_LABELS: Record<StepName, string> = {
   Containers: 'Installing container',
 };
 
-/** Heading for the current state of the run. */
-function title(running: boolean, failed: boolean): string {
-  if (failed) return 'Installation couldn\'t finish';
+/** Heading for the current state of the run. A failed or cancelled run has its own page (see App). */
+function title(running: boolean): string {
   return running ? 'Installing Enterprise Brain' : 'Getting ready to install';
 }
 
@@ -32,8 +29,7 @@ function title(running: boolean, failed: boolean): string {
  */
 export function InstallPage() {
   const { probe, install } = useAppState();
-  const { start, showLog, copyErrorReport } = useInstallActions();
-  const [copyLabel, flashCopyLabel] = useTimedText('Copy error report');
+  const { start } = useInstallActions();
 
   const modelName = probe ? recommendedModel(probe.models)?.name : undefined;
   const runInstall = useCallback(() => start({ models: modelName ? [modelName] : [] }), [start, modelName]);
@@ -47,17 +43,14 @@ export function InstallPage() {
     void runInstall();
   }, [probe, install.running, install.summary, runInstall]);
 
-  const { summary, startError } = install;
-  const failed = !install.running && (startError !== null || (summary !== null && summary.exitCode !== 0));
+  const { summary } = install;
 
   const segments = STEP_NAMES.map((name) => ({ id: name, label: SEGMENT_LABELS[name], ...stepSegment(install.steps[name]) }));
-
-  const copyReport = async () => flashCopyLabel((await copyErrorReport()) ? 'Copied' : 'Nothing to copy');
 
   return (
     <div className="w-full flex flex-col gap-[24px]">
       <div className="flex flex-col gap-[10px]">
-        <Typography variant="h1">{title(install.running, failed)}</Typography>
+        <Typography variant="h1">{title(install.running)}</Typography>
         <Typography variant="body" className="text-subtle-foreground">
           We install Ollama, download the AI model that suits this computer, install Docker, then download and start the
           dev container. You may be asked for your password.
@@ -85,29 +78,6 @@ export function InstallPage() {
               </li>
             ))}
           </ul>
-        </div>
-      )}
-
-      {failed && (
-        <div role="alert" className="flex flex-col gap-[12px]">
-          {startError ? (
-            <Typography variant="small" className="text-destructive">
-              Setup could not start: {startError}
-            </Typography>
-          ) : summary?.cancelled ? (
-            <Typography variant="small">Setup was cancelled.</Typography>
-          ) : (
-            summary?.failures && summary.failures.length > 0 && <FailureList failures={summary.failures} />
-          )}
-          <div className="flex flex-row flex-wrap gap-2">
-            <Button onClick={() => void runInstall()}>Retry</Button>
-            <Button variant="secondary" onClick={() => void showLog()}>
-              Show log
-            </Button>
-            <Button variant="secondary" onClick={() => void copyReport()}>
-              {copyLabel}
-            </Button>
-          </div>
         </div>
       )}
 
