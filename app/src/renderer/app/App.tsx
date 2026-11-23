@@ -48,7 +48,7 @@ export function App() {
         footer={
           <>
             {outcome === 'failed' ? (
-              <Button variant="secondary" onClick={() => void installerApi.showLog()}>
+              <Button variant="text" onClick={() => void installerApi.showLog()}>
                 View log
               </Button>
             ) : (

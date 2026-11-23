@@ -32,6 +32,13 @@
     --color-button-secondary-hover: var(--button-secondary-hover);
     --color-button-secondary-border: var(--button-secondary-border);
     --color-button-secondary-foreground: var(--button-secondary-foreground);
+    --color-button-text-green: var(--button-text-green);
+    --color-button-text-green-hover: var(--button-text-green-hover);
+    --color-button-text-red: var(--button-text-red);
+    --color-button-text-red-hover: var(--button-text-red-hover);
+    --color-button-text-neutral: var(--button-text-neutral);
+    --color-button-text-neutral-hover: var(--button-text-neutral-hover);
+    --color-detail-list: var(--detail-list);
     --color-stepper-complete: var(--stepper-complete);
     --color-stepper-complete-foreground: var(--stepper-complete-foreground);
     --color-stepper-connector-complete: var(--stepper-connector-complete);
@@ -108,6 +115,7 @@
     --palette-black: oklch(0 0 0);
 
     /* Sage: green-tinted greys used by the content area */
+    --palette-sage-25: #f5f8f7;
     --palette-sage-50: #f3f5f4;
     --palette-sage-100: #e6ece9;
     --palette-sage-300: #cfd9d4;
@@ -137,6 +145,7 @@
     --palette-red-50: #fef2f2;
     --palette-red-450: #e5484d;
     --palette-red-500: #ef4444;
+    --palette-red-550: #dc3e42;
     --palette-red-600: oklch(0.577 0.245 27.325);
     --palette-green-500: #22c55e;
     --palette-green-600: oklch(0.627 0.194 149.214);
@@ -185,6 +194,15 @@
     --button-secondary-hover: var(--palette-sage-50);
     --button-secondary-border: var(--palette-sage-300);
     --button-secondary-foreground: var(--palette-sage-900);
+    /* Text buttons: each color's hover is one shade darker. */
+    --button-text-green: var(--palette-brand-green-700);
+    --button-text-green-hover: var(--palette-brand-green-800);
+    --button-text-red: var(--palette-red-450);
+    --button-text-red-hover: var(--palette-red-550);
+    --button-text-neutral: var(--palette-sage-700);
+    --button-text-neutral-hover: var(--palette-sage-900);
+    /* Label / value card (components/detail-list). Not overridden in .dark. */
+    --detail-list: var(--palette-sage-25);
     /* Stepper (components/stepper). Its greys are --sidebar-foreground at reduced opacity. */
     --stepper-complete: var(--palette-brand-green-800);
     --stepper-complete-foreground: var(--palette-brand-green-300);

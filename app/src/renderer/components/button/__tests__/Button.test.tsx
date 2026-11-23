@@ -23,6 +23,29 @@ describe('Button', () => {
     expect(el.className).not.toContain('from-button-primary-from');
   });
 
+  test('text variant is green by default and darkens on hover', () => {
+    render(<Button variant="text">View log</Button>);
+    const el = screen.getByRole('button', { name: 'View log' });
+    expect(el.dataset.variant).toBe('text');
+    expect(el.className).toContain('text-button-text-green');
+    expect(el.className).toContain('enabled:hover:text-button-text-green-hover');
+    expect(el.className).toContain('bg-transparent');
+    expect(el.className).not.toContain('border-button-secondary-border');
+  });
+
+  test('text variant takes a color', () => {
+    render(<Button variant="text" color="red">Remove</Button>);
+    const el = screen.getByRole('button', { name: 'Remove' });
+    expect(el.className).toContain('text-button-text-red');
+    expect(el.className).not.toContain('text-button-text-green');
+    expect(el.getAttribute('color')).toBeNull();
+  });
+
+  test('color does nothing on the other variants', () => {
+    render(<Button variant="secondary" color="red">Exit</Button>);
+    expect(screen.getByRole('button', { name: 'Exit' }).className).not.toContain('text-button-text-red');
+  });
+
   test('never adds a box shadow', () => {
     render(
       <>
