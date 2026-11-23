@@ -55,7 +55,9 @@ export function App() {
               // Keeps Exit on the right: the footer spreads its children to both ends.
               <span />
             )}
-            <Button onClick={() => void installerApi.quit()}>Exit</Button>
+            <Button variant="secondary" onClick={() => void installerApi.quit()}>
+              Exit
+            </Button>
           </>
         }
       >

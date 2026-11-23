@@ -42,7 +42,7 @@ export function RequirementsPage({ status }: { status: FailedRequirements }) {
     <div className="w-full flex flex-col gap-[32px]">
       <div className="flex flex-col gap-[16px]">
         <div className="w-[48px] h-[48px] rounded-md bg-destructive/10 flex items-center justify-center">
-          <Icon aria-hidden size={22} className="text-destructive" />
+          <Icon aria-hidden size={24} className="text-destructive" />
         </div>
         <div className="flex flex-col gap-[10px]">
           <Typography variant="h1">
