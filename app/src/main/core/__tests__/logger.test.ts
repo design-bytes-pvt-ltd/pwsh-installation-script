@@ -31,7 +31,7 @@ describe('InstallLogger', () => {
     logger.event({ type: 'summary', results: { Ollama: 'installed', Models: 'FAILED: Failed to pull: nope:1b' }, notes: ['Open Docker Desktop once.'], exitCode: 1, cancelled: false });
 
     const text = fs.readFileSync(file, 'utf8');
-    expect(text).toContain(' Docker + Ollama Installer log');
+    expect(text).toContain(' Enterprise Brain Installer log');
     expect(text).toContain(' Started       2026-11-18 14:02:11 ');
     expect(text).toMatch(/\d\d:\d\d:\d\d\.\d{3} {2}STEP {3}Ollama {3}running/);
     expect(text).toMatch(/INFO {3}Ollama {3}Downloading https:\/\/\*\*\*:\*\*\*@example\.com\/x/);
@@ -88,10 +88,10 @@ describe('log helpers', () => {
   });
 
   it('uses the OS log folder', () => {
-    expect(defaultLogDir('darwin', {}, '/Users/a')).toBe('/Users/a/Library/Logs/Docker + Ollama Installer');
-    expect(defaultLogDir('linux', {}, '/home/a')).toBe('/home/a/.config/Docker + Ollama Installer/logs');
-    expect(defaultLogDir('linux', { XDG_CONFIG_HOME: '/x' }, '/home/a')).toBe('/x/Docker + Ollama Installer/logs');
-    expect(defaultLogDir('win32', { APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }, 'C:\\Users\\a')).toBe('C:\\Users\\a\\AppData\\Roaming\\Docker + Ollama Installer\\logs');
+    expect(defaultLogDir('darwin', {}, '/Users/a')).toBe('/Users/a/Library/Logs/Enterprise Brain Installer');
+    expect(defaultLogDir('linux', {}, '/home/a')).toBe('/home/a/.config/Enterprise Brain Installer/logs');
+    expect(defaultLogDir('linux', { XDG_CONFIG_HOME: '/x' }, '/home/a')).toBe('/x/Enterprise Brain Installer/logs');
+    expect(defaultLogDir('win32', { APPDATA: 'C:\\Users\\a\\AppData\\Roaming' }, 'C:\\Users\\a')).toBe('C:\\Users\\a\\AppData\\Roaming\\Enterprise Brain Installer\\logs');
   });
 
   it('formats times and options', () => {

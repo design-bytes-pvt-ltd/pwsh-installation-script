@@ -59,18 +59,23 @@ const rowVariants = cva('flex flex-row items-center justify-between gap-[14px] p
   },
 });
 
-const statusIconVariants = cva('shrink-0', {
+// Round badge holding the status icon: solid for passed / failed, tinted for warning / info.
+const statusIconVariants = cva('flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-full', {
   variants: {
-    bgStatus: { passed: 'bg-[#329D79]', failed: 'bg-[#E5484D]', warning: 'bg-warning/10', info: 'bg-subtle-foreground/10' },
-    status: { passed: 'text-success', failed: 'text-destructive', warning: 'text-warning', info: 'text-subtle-foreground' },
+    status: {
+      passed: 'bg-requirement-passed text-requirement-passed-foreground',
+      failed: 'bg-requirement-failed text-requirement-failed-foreground',
+      warning: 'bg-warning/10 text-warning',
+      info: 'bg-subtle-foreground/10 text-subtle-foreground',
+    },
   },
 });
 
 const resultVariants = cva('text-right', {
   variants: {
     status: {
-      passed: 'text-[#256156]',
-      failed: 'text-[#E5484D]',
+      passed: 'text-requirement-passed-text',
+      failed: 'text-requirement-failed',
       warning: 'text-foreground',
       info: 'text-subtle-foreground',
     },
@@ -90,15 +95,15 @@ function RequirementsTable({ requirements, className, ...props }: RequirementsTa
         return (
           <li key={id} data-status={status} className={rowVariants({ status })}>
             <div className="flex min-w-0 flex-row items-center gap-[14px]">
-              <Icon aria-hidden size={20} color="#55645E" />
+              <Icon aria-hidden size={20} className="shrink-0 text-requirement-icon" />
               <Typography variant="body">
                 {label}
               </Typography>
             </div>
 
             <div className="flex min-w-0 flex-row items-center gap-[8px]">
-              <div aria-hidden className={cn(statusIconVariants({ bgStatus: status }), 'flex h-[20px] w-[20px] items-center justify-center rounded-full')}>
-                <StatusIcon aria-hidden size={12} color='#FFF' />
+              <div aria-hidden className={statusIconVariants({ status })}>
+                <StatusIcon aria-hidden size={12} />
               </div>
               <Typography variant="small" className={resultVariants({ status })}>
                 {result ?? DEFAULT_RESULT[status]}

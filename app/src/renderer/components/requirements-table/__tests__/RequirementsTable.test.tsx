@@ -30,7 +30,7 @@ describe('RequirementsTable', () => {
   test('only a failed row is light red, with its reason in red', () => {
     render(<RequirementsTable requirements={requirements} />);
     expect(rows().map((li) => li.className.includes('bg-destructive-subtle'))).toEqual([false, true, false, false]);
-    expect(within(rows()[1]).getByText('Only 20.0 GB free on C:\\').className).toContain('text-destructive');
+    expect(within(rows()[1]).getByText('Only 20.0 GB free on C:\\').className).toContain('text-requirement-failed');
   });
 
   test('passed and failed rows fall back to "Passed" / "Failed"', () => {

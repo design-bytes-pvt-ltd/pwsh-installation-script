@@ -41,6 +41,12 @@
     --color-progress-track: var(--progress-track);
     --color-progress-from: var(--progress-from);
     --color-progress-to: var(--progress-to);
+    --color-requirement-icon: var(--requirement-icon);
+    --color-requirement-passed: var(--requirement-passed);
+    --color-requirement-passed-foreground: var(--requirement-passed-foreground);
+    --color-requirement-passed-text: var(--requirement-passed-text);
+    --color-requirement-failed: var(--requirement-failed);
+    --color-requirement-failed-foreground: var(--requirement-failed-foreground);
     --color-icon-badge: var(--icon-badge);
     --color-icon-badge-foreground: var(--icon-badge-foreground);
     --color-success: var(--success);
@@ -106,6 +112,7 @@
     --palette-sage-100: #e6ece9;
     --palette-sage-300: #cfd9d4;
     --palette-sage-500: #8b9893;
+    --palette-sage-700: #55645e;
     --palette-sage-900: #2e3d38;
     --palette-sage-950: #10211b;
 
@@ -128,6 +135,7 @@
 
     /* Status hues */
     --palette-red-50: #fef2f2;
+    --palette-red-450: #e5484d;
     --palette-red-500: #ef4444;
     --palette-red-600: oklch(0.577 0.245 27.325);
     --palette-green-500: #22c55e;
@@ -188,6 +196,13 @@
     --progress-track: var(--palette-sage-100);
     --progress-from: var(--palette-brand-green-500);
     --progress-to: var(--palette-brand-green-700);
+    /* Requirements table (components/requirements-table). Not overridden in .dark. */
+    --requirement-icon: var(--palette-sage-700);
+    --requirement-passed: var(--palette-brand-green-500);
+    --requirement-passed-foreground: var(--palette-white);
+    --requirement-passed-text: var(--palette-brand-green-700);
+    --requirement-failed: var(--palette-red-450);
+    --requirement-failed-foreground: var(--palette-white);
     /* Round icon badge on light surfaces (e.g. the feature list on the Get ready page) */
     --icon-badge: var(--palette-brand-green-50);
     --icon-badge-foreground: var(--palette-brand-green-700);
