@@ -36,6 +36,11 @@
     --color-stepper-complete-foreground: var(--stepper-complete-foreground);
     --color-stepper-connector-complete: var(--stepper-connector-complete);
     --color-stepper-active-foreground: var(--stepper-active-foreground);
+    --color-progress-surface: var(--progress-surface);
+    --color-progress-border: var(--progress-border);
+    --color-progress-track: var(--progress-track);
+    --color-progress-from: var(--progress-from);
+    --color-progress-to: var(--progress-to);
     --color-icon-badge: var(--icon-badge);
     --color-icon-badge-foreground: var(--icon-badge-foreground);
     --color-success: var(--success);
@@ -173,6 +178,12 @@
     --stepper-complete-foreground: var(--palette-brand-green-300);
     --stepper-connector-complete: var(--palette-brand-green-600);
     --stepper-active-foreground: var(--palette-brand-green-900);
+    /* Segmented progress card (components/segmented-progress). Not overridden in .dark. */
+    --progress-surface: var(--palette-sage-50);
+    --progress-border: var(--palette-sage-100);
+    --progress-track: var(--palette-sage-100);
+    --progress-from: var(--palette-brand-green-500);
+    --progress-to: var(--palette-brand-green-700);
     /* Round icon badge on light surfaces (e.g. the feature list on the Get ready page) */
     --icon-badge: var(--palette-brand-green-50);
     --icon-badge-foreground: var(--palette-brand-green-700);

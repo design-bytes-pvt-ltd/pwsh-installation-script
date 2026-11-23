@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { resultTone, stepLabel, stepTone, summaryTitle } from '../status';
+import { resultTone, stepLabel, stepSegment, stepTone, summaryTitle } from '../status';
 
 describe('install status', () => {
   test('step labels and tones', () => {
@@ -8,6 +8,16 @@ describe('install status', () => {
     expect(stepTone({ status: 'pending' })).toBe('neutral');
     expect(stepTone({ status: 'skipped' })).toBe('neutral');
     expect(stepTone({ status: 'failed' })).toBe('failed');
+  });
+
+  test('progress segments', () => {
+    expect(stepSegment({ status: 'pending' })).toEqual({ status: 'upcoming', value: 0 });
+    expect(stepSegment({ status: 'running' })).toEqual({ status: 'active', value: 0 });
+    expect(stepSegment({ status: 'running', percent: 40 })).toEqual({ status: 'active', value: 40 });
+    expect(stepSegment({ status: 'done', percent: 40 })).toEqual({ status: 'complete', value: 100 });
+    expect(stepSegment({ status: 'skipped' })).toEqual({ status: 'complete', value: 100 });
+    expect(stepSegment({ status: 'failed', percent: 30 })).toEqual({ status: 'error', value: 30 });
+    expect(stepSegment({ status: 'cancelled', percent: 30 })).toEqual({ status: 'upcoming', value: 30 });
   });
 
   test('result tones', () => {

@@ -8,6 +8,8 @@ export const STEP_NAMES: readonly StepName[] = ['Ollama', 'Models', 'Docker', 'C
 export interface StepState {
   status: StepStatus | 'pending';
   detail?: string;
+  /** 0–100, from this step's latest progress event that had one. */
+  percent?: number;
 }
 
 export interface InstallOptionsState {
@@ -89,20 +91,30 @@ function defaultSelection(probe: ProbeResult | null): string[] {
 function applyInstallEvent(state: AppState, event: InstallEvent): AppState {
   const install = state.install;
   switch (event.type) {
-    case 'step':
+    case 'step': {
+      const { percent } = install.steps[event.step];
       return {
         ...state,
-        install: { ...install, steps: { ...install.steps, [event.step]: { status: event.status, detail: event.detail } } },
+        install: {
+          ...install,
+          steps: { ...install.steps, [event.step]: { status: event.status, detail: event.detail, ...(percent !== undefined && { percent }) } },
+        },
       };
-    case 'progress':
+    }
+    case 'progress': {
+      const hasPercent = typeof event.percent === 'number';
       return {
         ...state,
         install: {
           ...install,
           progressLabel: `${event.step}: ${event.label}`,
-          percent: typeof event.percent === 'number' ? event.percent : install.percent,
+          percent: hasPercent ? event.percent! : install.percent,
+          steps: hasPercent
+            ? { ...install.steps, [event.step]: { ...install.steps[event.step], percent: event.percent } }
+            : install.steps,
         },
       };
+    }
     case 'log':
       return {
         ...state,

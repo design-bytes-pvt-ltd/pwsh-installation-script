@@ -76,9 +76,14 @@ describe('install lifecycle', () => {
     s = reducer(s, { type: 'installEvent', event: { type: 'progress', step: 'Models', label: 'llama3: verifying' } });
     s = reducer(s, { type: 'installEvent', event: { type: 'log', level: 'warn', message: 'slow mirror', timestamp: 't' } });
     s = reducer(s, { type: 'installEvent', event: { type: 'note', message: 'ignored' } });
-    expect(s.install.steps.Models).toEqual({ status: 'running', detail: 'llama3' });
+    expect(s.install.steps.Models).toEqual({ status: 'running', detail: 'llama3', percent: 40 });
+    expect(s.install.steps.Ollama).toEqual({ status: 'pending' });
     expect(s.install.progressLabel).toBe('Models: llama3: verifying');
     expect(s.install.percent).toBe(40);
+
+    // A later status change keeps the step's percentage.
+    s = reducer(s, { type: 'installEvent', event: { type: 'step', step: 'Models', status: 'failed', detail: 'timeout' } });
+    expect(s.install.steps.Models).toEqual({ status: 'failed', detail: 'timeout', percent: 40 });
     expect(s.install.logLines).toEqual(['[warn] slow mirror\n']);
   });
 

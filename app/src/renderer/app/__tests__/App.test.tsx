@@ -156,12 +156,16 @@ describe('App', () => {
       dryRun: false,
       models: ['llama3'],
     });
-    expect(screen.getByText('Download the AI model (llama3)')).toBeTruthy();
-    expect(screen.getByText('Start the dev container (ubuntu-nix-hm)')).toBeTruthy();
+    const overall = () => screen.getByRole('progressbar', { name: 'Overall progress' }).textContent;
+    expect(overall()).toBe('0%');
+    expect(screen.getByText('AI model')).toBeTruthy();
+    expect(screen.getByText('Dev container')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
 
     act(() => fake.emit({ type: 'step', step: 'Ollama', status: 'done', detail: 'already present' }));
-    expect(screen.getByText('done: already present')).toBeTruthy();
+    act(() => fake.emit({ type: 'progress', step: 'Models', label: 'llama3: pulling', percent: 50 }));
+    // Four equal stages: Ollama done (100) + the model half way (50) = 150 / 4.
+    expect(overall()).toBe('38%');
     expect(activeStep()?.textContent).toContain('Install');
 
     await act(async () => {
@@ -169,7 +173,7 @@ describe('App', () => {
       fake.finishInstall();
     });
     expect(activeStep()?.textContent).toContain('Finish');
-    expect(screen.getByText('All set.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Enterprise Brain is ready' })).toBeTruthy();
     expect(footerButton('Launch Enterprise Brain')).toBeTruthy();
     expect(fake.api.startInstall).toHaveBeenCalledTimes(1);
   });

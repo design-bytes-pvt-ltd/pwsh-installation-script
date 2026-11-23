@@ -2,13 +2,21 @@ import { useCallback, useEffect, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Button } from '@/components/button';
 import { Typography } from '@/components/typography';
+import { SegmentedProgress } from '@/components/segmented-progress';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Progress } from '@/components/ui/progress';
-import { FailureList, LogViewer, StatusRow, stepLabel, stepTone, useInstallActions } from '@/features/install';
+import { FailureList, LogViewer, stepSegment, useInstallActions } from '@/features/install';
 import { recommendedModel } from '@/features/models';
 import { useTimedText } from '@/hooks/useTimedText';
 import { STEP_NAMES, useAppState } from '@/store';
 import type { StepName } from '../../shared/types';
+
+/** Names under the progress card's bars. */
+const SEGMENT_LABELS: Record<StepName, string> = {
+  Ollama: 'Installing Ollama',
+  Models: 'Pulling AI model',
+  Docker: 'Setting up Docker',
+  Containers: 'Installing container',
+};
 
 /** Heading for the current state of the run. */
 function title(running: boolean, failed: boolean): string {
@@ -42,12 +50,7 @@ export function InstallPage() {
   const { summary, startError } = install;
   const failed = !install.running && (startError !== null || (summary !== null && summary.exitCode !== 0));
 
-  const stepTitles: Record<StepName, string> = {
-    Ollama: 'Install Ollama',
-    Models: modelName ? `Download the AI model (${modelName})` : 'Download the AI model',
-    Docker: 'Install Docker',
-    Containers: 'Start the dev container (ubuntu-nix-hm)',
-  };
+  const segments = STEP_NAMES.map((name) => ({ id: name, label: SEGMENT_LABELS[name], ...stepSegment(install.steps[name]) }));
 
   const copyReport = async () => flashCopyLabel((await copyErrorReport()) ? 'Copied' : 'Nothing to copy');
 
@@ -61,20 +64,7 @@ export function InstallPage() {
         </Typography>
       </div>
 
-      <ul className="flex flex-col gap-2" aria-label="Install steps">
-        {STEP_NAMES.map((name) => (
-          <StatusRow key={name} name={stepTitles[name]} tone={stepTone(install.steps[name])} label={stepLabel(install.steps[name])} />
-        ))}
-      </ul>
-
-      {install.running && (
-        <div className="flex flex-col gap-[8px]">
-          <Progress value={install.percent} aria-label="Install progress" />
-          <Typography variant="caption" className="text-subtle-foreground">
-            {install.progressLabel}
-          </Typography>
-        </div>
-      )}
+      <SegmentedProgress segments={segments} />
 
       {summary && summary.notes.length > 0 && (
         <div className="flex flex-col gap-[6px]">
