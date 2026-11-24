@@ -92,6 +92,8 @@ export interface InstallResources {
   composePath: string;
   /** Candidate ghcr.io credential files, tried in order. */
   credentialFiles: string[];
+  /** Called once Docker Desktop, launched by the install, is ready (e.g. to hide it and refocus the installer). */
+  onDockerStarted?: () => void | Promise<void>;
 }
 
 export async function runInstall(
@@ -179,6 +181,7 @@ export async function runInstall(
     startContainers({
       composePath: resources!.composePath,
       credentialFiles: resources!.credentialFiles,
+      onDockerStarted: resources!.onDockerStarted,
       dryRun: options.dryRun,
       signal,
       emit: forward,

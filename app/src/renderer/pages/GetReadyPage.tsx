@@ -1,4 +1,4 @@
-import { HardDrive, Loader2, Lock, ShieldCheck } from 'lucide-react';
+import { HardDrive, Lock, ShieldCheck } from 'lucide-react';
 import { Banner } from '@/components/banner';
 import { Typography } from '@/components/typography';
 import { MIN_REQUIREMENTS_CHECK_MS, requirementsStatus, useProbe } from '@/features/system';
@@ -31,12 +31,8 @@ export function GetReadyFooterNote() {
 
   switch (status.kind) {
     case 'checking':
-      return (
-        <span role="status" className="inline-flex items-center gap-[6px]">
-          <Loader2 aria-hidden size={12} className="animate-spin" />
-          Checking system requirements…
-        </span>
-      );
+      // The progress spinner sits next to the footer button (see App).
+      return 'Takes about 30 minutes';
     case 'error':
     case 'blocked':
       // The Requirements page in the content area explains what is wrong and offers "Try again".

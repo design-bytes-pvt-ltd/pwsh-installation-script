@@ -24,9 +24,11 @@ import {
   parsePlatform,
   PullProgressTracker,
   resolveDockerCli,
+  waitForDocker,
 } from '../containers';
 import { findHint, redact } from '../errors';
 import { DEFAULT_LAUNCH_URL, isWebUrl, loadLaunchUrl } from '../appConfig';
+import type { InstallEvent } from '../../../shared/types';
 import { getTargetUser, isWindowsArm64, parseOsRelease, quoteAppleScript, quotePs, quoteSh } from '../platform';
 
 describe('hardware', () => {
@@ -330,6 +332,62 @@ describe('containers', () => {
   it('redacts GitHub tokens', () => {
     expect(redact('login with ghp_abcdefghijklmnopqrstuvwxyz0123 failed')).toBe('login with *** failed');
     expect(redact('github_pat_11ABCDEFG0123456789_abcdefghij')).toBe('***');
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('waitForDocker onStarted', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  /** A fake docker CLI whose `info` fails `failures` times, then prints a server version. */
+  function fakeDocker(failures: number): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-docker-'));
+    dirs.push(dir);
+    const counter = path.join(dir, 'count');
+    const cli = path.join(dir, 'docker');
+    fs.writeFileSync(
+      cli,
+      [
+        '#!/bin/sh',
+        `n=$(cat '${counter}' 2>/dev/null || echo 0)`,
+        `echo $((n + 1)) > '${counter}'`,
+        `if [ "$n" -lt ${failures} ]; then echo 'Cannot connect to the Docker daemon' >&2; exit 1; fi`,
+        "echo '27.0.1'",
+      ].join('\n')
+    );
+    fs.chmodSync(cli, 0o755);
+    return cli;
+  }
+  // linux + engine: startDocker does nothing, so no real Docker is launched.
+  const base = { env: process.env, targetOS: 'linux' as const, kind: 'engine' as const, pollMs: 1, timeoutMs: 5_000 };
+
+  it('calls onStarted once after starting Docker', async () => {
+    const onStarted = vi.fn();
+    const version = await waitForDocker({ ...base, cli: fakeDocker(2), emit: () => {}, onStarted });
+    expect(version).toBe('27.0.1');
+    expect(onStarted).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call onStarted when Docker is already running', async () => {
+    const onStarted = vi.fn();
+    await waitForDocker({ ...base, cli: fakeDocker(0), emit: () => {}, onStarted });
+    expect(onStarted).not.toHaveBeenCalled();
+  });
+
+  it('only logs a warning when onStarted throws', async () => {
+    const events: InstallEvent[] = [];
+    const version = await waitForDocker({
+      ...base,
+      cli: fakeDocker(1),
+      emit: (e) => events.push(e),
+      onStarted: () => {
+        throw new Error('no focus');
+      },
+    });
+    expect(version).toBe('27.0.1');
+    expect(events.some((e) => e.type === 'log' && e.level === 'warn' && e.message.includes('no focus'))).toBe(true);
   });
 });
 

@@ -152,12 +152,12 @@ function Stepper<T extends string>({ steps, value, completed = false, className,
             <div className="flex min-w-0 flex-col">
               <Typography
                 as="span"
-                className={cn('text-[15px] leading-5 font-semibold', titleVariants({ status }))}
+                className={cn('text-[15px] leading-5 font-medium tracking-wide', titleVariants({ status }))}
               >
                 {step.title}
               </Typography>
               {step.description != null && (
-                <Typography as="span" className={cn('text-[13px] leading-5', descriptionVariants({ status }))}>
+                <Typography as="span" className={cn('text-[13px] leading-5 font-light', descriptionVariants({ status }))}>
                   {step.description}
                 </Typography>
               )}

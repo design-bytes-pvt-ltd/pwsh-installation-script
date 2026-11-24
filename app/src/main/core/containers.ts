@@ -136,7 +136,8 @@ async function startDocker(
   try {
     if (targetOS === 'macos') {
       log('info', 'Starting Docker Desktop...');
-      await execCommand('open', ['-g', '-a', 'Docker'], { signal });
+      // Not `-g`: Docker Desktop comes to the front while it starts; see dismissDockerDesktop.
+      await execCommand('open', ['-a', 'Docker'], { signal });
     } else if (targetOS === 'windows') {
       const pf = process.env.ProgramFiles || 'C:\\Program Files';
       const exe = path.win32.join(pf, 'Docker', 'Docker', 'Docker Desktop.exe');
@@ -155,6 +156,68 @@ async function startDocker(
   }
 }
 
+/**
+ * Hides the Docker Desktop window once Docker is running, leaving Docker itself running. Best effort.
+ * macOS asks the user once to let the installer control System Events; Windows sends Docker
+ * Desktop to the tray. Linux has no reliable way to close another app's window, so it is left alone.
+ */
+export async function dismissDockerDesktop(
+  targetOS: TargetOS,
+  log: (level: 'info' | 'warn', message: string) => void = () => {}
+): Promise<void> {
+  try {
+    if (targetOS === 'macos') {
+      await execCommand('osascript', [
+        '-e',
+        `tell application "System Events" to set visible of (every process whose name is "${DOCKER_DESKTOP_PROCESS}") to false`,
+      ]);
+    } else if (targetOS === 'windows') {
+      await execCommand('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Get-Process -Name '${DOCKER_DESKTOP_PROCESS}' -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }`,
+      ]);
+    }
+  } catch (err) {
+    log('warn', `Could not hide the Docker Desktop window: ${(err as Error)?.message ?? String(err)}`);
+  }
+}
+
+/** Docker Desktop's UI process name on macOS and Windows. */
+const DOCKER_DESKTOP_PROCESS = 'Docker Desktop';
+
+/** Windows: name of the process that owns the foreground window. */
+const WINDOWS_FOREGROUND_PROCESS_SCRIPT = [
+  "Add-Type -Namespace EbInstaller -Name User32 -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);'",
+  '$p = 0',
+  '[void][EbInstaller.User32]::GetWindowThreadProcessId([EbInstaller.User32]::GetForegroundWindow(), [ref]$p)',
+  '(Get-Process -Id $p).ProcessName',
+].join('; ');
+
+/**
+ * Whether Docker Desktop is the app in front. False when unsure (Linux, or macOS without permission
+ * to ask System Events), so callers never pull focus away from an app the user chose.
+ */
+export async function isDockerDesktopFrontmost(targetOS: TargetOS): Promise<boolean> {
+  try {
+    let name = '';
+    if (targetOS === 'macos') {
+      const res = await execCommand('osascript', [
+        '-e',
+        'tell application "System Events" to get name of first application process whose frontmost is true',
+      ]);
+      name = res.stdout;
+    } else if (targetOS === 'windows') {
+      const res = await execCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_FOREGROUND_PROCESS_SCRIPT]);
+      name = res.stdout;
+    }
+    return name.trim() === DOCKER_DESKTOP_PROCESS;
+  } catch {
+    return false;
+  }
+}
+
 /** Waits until the Docker daemon answers, starting Docker Desktop first if needed. Returns its version. */
 export async function waitForDocker(options: {
   cli: string;
@@ -165,6 +228,8 @@ export async function waitForDocker(options: {
   signal?: AbortSignal;
   timeoutMs?: number;
   pollMs?: number;
+  /** Runs once Docker, started by this call, is ready (not when it was already running). Errors are only logged. */
+  onStarted?: () => void | Promise<void>;
 }): Promise<string> {
   const { cli, env, signal, emit } = options;
   const log = (level: 'info' | 'warn', message: string) => emit(logEvent(message, level));
@@ -180,7 +245,16 @@ export async function waitForDocker(options: {
   while (Date.now() < deadline) {
     await delay(options.pollMs ?? DOCKER_POLL_MS, signal);
     info = await dockerInfo(cli, env, signal);
-    if (info.ok) return info.version;
+    if (info.ok) {
+      if (options.onStarted) {
+        try {
+          await options.onStarted();
+        } catch (err) {
+          log('warn', `Could not switch back to the installer window: ${(err as Error)?.message ?? String(err)}`);
+        }
+      }
+      return info.version;
+    }
   }
   const minutes = Math.round((options.timeoutMs ?? DOCKER_READY_TIMEOUT_MS) / 60_000);
   throw new CommandError({
@@ -628,6 +702,8 @@ export async function startContainers(options: {
   dryRun?: boolean;
   signal?: AbortSignal;
   emit: (event: InstallEvent) => void;
+  /** Called once Docker Desktop, launched by the installer, is ready and its window hidden. */
+  onDockerStarted?: () => void | Promise<void>;
 }): Promise<string> {
   const { composePath, signal, emit } = options;
   const targetOS = getTargetOS();
@@ -646,7 +722,19 @@ export async function startContainers(options: {
   log('info', `Using docker CLI: ${cli}`);
 
   progress('Checking Docker...');
-  const version = await waitForDocker({ cli, env, targetOS, kind, emit, signal });
+  const version = await waitForDocker({
+    cli,
+    env,
+    targetOS,
+    kind,
+    emit,
+    signal,
+    // Docker Desktop came to the front while starting; hide it and hand focus back to the installer.
+    onStarted: async () => {
+      await dismissDockerDesktop(targetOS, log);
+      await options.onDockerStarted?.();
+    },
+  });
   log('info', `Docker ${version} is running.`);
 
   const onOutput = (line: string) => log('info', line, true);

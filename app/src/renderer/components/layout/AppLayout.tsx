@@ -23,7 +23,7 @@ export function AppLayout({ sidebar, children, footer }: AppLayoutProps) {
       >
         {sidebar}
         <div className="mt-auto pl-[12px]">
-          <Typography font="secondary" variant="caption">Version: {APP_VERSION}</Typography>
+          <Typography font="secondary" variant="caption">Version {APP_VERSION}</Typography>
         </div>
       </aside>
       {/* `isolate` lets the glow sit at -z-10: above main's background, behind the page content. */}

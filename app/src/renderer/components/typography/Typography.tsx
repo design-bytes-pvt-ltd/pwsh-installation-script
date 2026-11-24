@@ -14,7 +14,7 @@ const typographyVariants = cva('', {
       h3: 'text-lg leading-snug font-medium',
       body: 'text-base font-normal leading-relaxed',
       small: 'text-sm font-normal leading-normal',
-      caption: 'text-xs font-normal leading-normal',
+      caption: 'text-[13px] font-light leading-normal',
     },
     font: {
       primary: 'font-sans',

@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import { AppLayout } from '@/components/layout';
 import { Typography } from '@/components/typography';
 import { Button } from '@/components/button';
+import { Spinner } from '@/components/spinner';
 import { Stepper } from '@/components/stepper';
 import { installOutcome, useInstallerEvents } from '@/features/install';
+import { requirementsStatus } from '@/features/system';
 import { InstallCancelledPage, InstallFailedPage } from '@/pages';
 import { installerApi } from '@/services/installerApi';
 import { useAppState } from '@/store';
@@ -30,6 +32,9 @@ export function App() {
   const next = STEPS[index + 1];
   const canProceed = 'canProceed' in step ? step.canProceed(state) : true;
   const showExit = 'exitWhen' in step && step.exitWhen(state);
+  // The system check runs on the Get ready step; show its progress next to the footer button.
+  const checkingRequirements =
+    stepId === 'get-ready' && requirementsStatus(state.probe, state.probeError).kind === 'checking';
   const advanceTo: StepId | undefined =
     'advanceWhen' in step && step.advanceWhen(state) ? ('advanceTo' in step ? step.advanceTo : next?.id) : undefined;
 
@@ -82,12 +87,22 @@ export function App() {
                 Exit
               </Button>
             ) : 'actionLabel' in step && (
-              <Button
-                disabled={!canProceed}
-                onClick={() => ('onAction' in step ? void step.onAction() : setStepId(next?.id ?? STEPS[0].id))}
-              >
-                {step.actionLabel}
-              </Button>
+              <div className="flex flex-row items-center gap-2">
+                {checkingRequirements && (
+                  <span role="status" className="inline-flex items-center gap-[6px]">
+                    <Spinner />
+                    <Typography variant="caption" color="#10211B">
+                      Checking system requirements
+                    </Typography>
+                  </span>
+                )}
+                <Button
+                  disabled={!canProceed}
+                  onClick={() => ('onAction' in step ? void step.onAction() : setStepId(next?.id ?? STEPS[0].id))}
+                >
+                  {step.actionLabel}
+                </Button>
+              </div>
             )}
           </div>
         </>

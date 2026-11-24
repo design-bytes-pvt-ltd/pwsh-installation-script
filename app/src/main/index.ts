@@ -2,8 +2,10 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadLaunchUrl } from './core/appConfig';
+import { dismissDockerDesktop, isDockerDesktopFrontmost } from './core/containers';
 import { defaultLogDir, describeOptions, describeSystem, fileStamp, InstallLogger, pruneOldLogs } from './core/logger';
 import { type InstallResources, probeSystem, runInstall } from './core/orchestrator';
+import { getTargetOS } from './core/platform';
 import type { InstallOptions } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -98,7 +100,66 @@ function resolveModelsPath(): string {
 function resolveInstallResources(): InstallResources {
   const credentialFiles = [path.resolve(__dirname, '../../../ghcr-credentials.json')];
   if (app.isPackaged) credentialFiles.unshift(path.join(process.resourcesPath, 'ghcr-credentials.json'));
-  return { composePath: resolveResourcePath('containers/docker-compose.yml'), credentialFiles };
+  return {
+    composePath: resolveResourcePath('containers/docker-compose.yml'),
+    credentialFiles,
+    onDockerStarted: () => {
+      focusInstallerWindow();
+      guardFocusFromDocker();
+    },
+  };
+}
+
+/** How long after Docker is ready the installer takes focus back from Docker Desktop. */
+const DOCKER_FOCUS_GUARD_MS = 20_000;
+/** At most this many take-backs, so the installer never fights the user over focus. */
+const DOCKER_FOCUS_GUARD_MAX = 3;
+
+/**
+ * Docker Desktop finishes opening its dashboard a few seconds after the engine answers, and that
+ * pulls focus away again. For a short while, if the installer loses focus to Docker Desktop
+ * (and only to it), hide Docker again and refocus the installer.
+ */
+function guardFocusFromDocker(): void {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  const targetOS = getTargetOS();
+  let busy = false;
+  let takeBacks = 0;
+  const onBlur = async () => {
+    if (busy || takeBacks >= DOCKER_FOCUS_GUARD_MAX) return;
+    busy = true;
+    try {
+      if (await isDockerDesktopFrontmost(targetOS)) {
+        takeBacks++;
+        await dismissDockerDesktop(targetOS);
+        focusInstallerWindow();
+      }
+    } finally {
+      busy = false;
+    }
+  };
+  win.on('blur', onBlur);
+  setTimeout(() => {
+    if (!win.isDestroyed()) win.off('blur', onBlur);
+  }, DOCKER_FOCUS_GUARD_MS);
+}
+
+/** Brings the installer back to the front, e.g. after Docker Desktop took focus while starting. */
+function focusInstallerWindow(): void {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  if (process.platform === 'darwin') {
+    app.focus({ steal: true });
+    win.focus();
+  } else {
+    // Windows' foreground lock ignores a plain focus() from a background app; topmost briefly gets past it.
+    win.setAlwaysOnTop(true);
+    win.focus();
+    win.setAlwaysOnTop(false);
+  }
 }
 
 /** Rebuilds the options from untrusted IPC input instead of passing it through. */
@@ -119,8 +180,8 @@ function sanitizeOptions(raw: unknown): InstallOptions {
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 960,
-    height: 700,
+    width: 1000,
+    height: 690,
     minWidth: 780,
     minHeight: 580,
     title: 'Enterprise Brain Installer',
