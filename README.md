@@ -15,6 +15,7 @@ Downloaded installers are checked before they run (Authenticode on Windows, `cod
 cd app
 npm ci
 npm start        # build and open the app
+npm run dev      # same, in development mode: adds the Figma design overlay (Cmd/Ctrl+Shift+D)
 npm test         # unit and fixture tests
 npm run dist     # build installers (nsis / dmg / AppImage) into app/release
 ```

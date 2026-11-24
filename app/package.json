@@ -10,6 +10,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "npm run build && electron .",
+    "dev": "npm run build:main && vite build --mode development && electron .",
     "dist": "npm run build && electron-builder",
     "ui:add": "env -u npm_config_allow_scripts TS_NODE_PROJECT=tsconfig.renderer.json shadcn add"
   },

@@ -190,6 +190,8 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Development only: lets the preload expose the design overlay's screenshot API.
+      ...(app.isPackaged ? {} : { additionalArguments: ['--enable-design-overlay'] }),
     },
   });
 
@@ -278,6 +280,14 @@ app.whenReady().then(() => {
     clipboard.writeText(`${text}\nFull log: ${currentLogger?.filePath}\n`);
     return true;
   });
+
+  // Development only: screenshot of the page for the design overlay (side-by-side and pixel diff).
+  if (!app.isPackaged) {
+    ipcMain.handle('dev:capture-page', async (event) => {
+      if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Not allowed.');
+      return (await event.sender.capturePage()).toDataURL();
+    });
+  }
 
   ipcMain.handle('log:renderer-error', (_event, raw: unknown) => {
     handleCrash('Renderer error', sanitizeRendererError(raw), false);

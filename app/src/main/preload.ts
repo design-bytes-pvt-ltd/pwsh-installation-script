@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 // Type-only imports: a sandboxed preload cannot require local modules at runtime.
-import type { InstallerApi } from '../shared/api';
+import type { DevToolsApi, InstallerApi } from '../shared/api';
 import type { InstallEvent } from '../shared/types';
 
 const api: InstallerApi = {
@@ -20,3 +20,11 @@ const api: InstallerApi = {
 };
 
 contextBridge.exposeInMainWorld('installerApi', api);
+
+// Development only: the main process passes this flag to unpackaged builds alone (see createWindow).
+if (process.argv.includes('--enable-design-overlay')) {
+  const devToolsApi: DevToolsApi = {
+    capturePage: () => ipcRenderer.invoke('dev:capture-page'),
+  };
+  contextBridge.exposeInMainWorld('devToolsApi', devToolsApi);
+}

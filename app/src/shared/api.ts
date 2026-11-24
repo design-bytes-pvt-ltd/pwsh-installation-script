@@ -14,3 +14,12 @@ export interface InstallerApi {
   quit: () => Promise<void>;
   onEvent: (callback: (event: InstallEvent) => void) => () => void;
 }
+
+/**
+ * Development-only API, exposed as `window.devToolsApi` only in unpackaged builds (see
+ * src/main/index.ts). Used by the design overlay (renderer features/design-overlay).
+ */
+export interface DevToolsApi {
+  /** Screenshot of the installer window's page, as a PNG data URL. */
+  capturePage: () => Promise<string>;
+}
