@@ -7,7 +7,7 @@ export function InstallCancelledPage() {
 
   return (
     <div className="w-full flex flex-col gap-[32px]">
-      <div className="flex flex-col gap-[16px]">
+      <div className="flex flex-col gap-[22px]">
         <div className="w-[48px] h-[48px] rounded-md bg-destructive/10 flex items-center justify-center">
           <Icon aria-hidden size={24} className="text-destructive" />
         </div>

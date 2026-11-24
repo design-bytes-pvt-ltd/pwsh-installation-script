@@ -26,11 +26,11 @@ function DetailList({ items, className, ...props }: DetailListProps) {
       {...props}
     >
       {items.map(({ id, label, value }) => (
-        <div key={id} className="flex flex-row flex-wrap items-center justify-between gap-x-[16px] gap-y-[4px] py-[14px]">
-          <Typography as="dt" variant="body" className="text-subtle-foreground">
+        <div key={id} className="flex flex-row flex-wrap items-center justify-between gap-x-[16px] gap-y-[4px] py-[15px]">
+          <Typography as="dt" variant="body" className="text-[14px] text-subtle-foreground">
             {label}
           </Typography>
-          <Typography as="dd" variant="caption" font="secondary" className="min-w-0 break-all text-right select-text">
+          <Typography as="dd" variant="caption" font="secondary" className="text-[12px] min-w-0 break-all text-right select-text">
             {value}
           </Typography>
         </div>

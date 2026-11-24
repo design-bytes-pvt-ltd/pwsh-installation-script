@@ -56,7 +56,7 @@ export function GetReadyPage() {
     <div className="w-full flex flex-col gap-[32px]">
       <Banner src={HerBanner} alt="Hero banner" />
       <div className="flex flex-col gap-[10px]">
-        <Typography variant="h1">
+        <Typography variant="h1" className="tracking-[-0.005em]">
           Welcome to Enterprise Brain
         </Typography>
         <Typography variant="body" className="text-subtle-foreground">
@@ -69,7 +69,7 @@ export function GetReadyPage() {
             <div className="w-[28px] h-[28px] rounded-full bg-icon-badge flex items-center justify-center">
               <feature.icon aria-hidden size={14} className="text-icon-badge-foreground" />
             </div>
-            <Typography variant="body">
+            <Typography variant="body" className="tracking-tight">
               {feature.description}
             </Typography>
           </div>

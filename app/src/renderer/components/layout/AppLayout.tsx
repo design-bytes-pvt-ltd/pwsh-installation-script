@@ -19,11 +19,13 @@ export function AppLayout({ sidebar, children, footer }: AppLayoutProps) {
           Its URL is only known after Vite bundles it, so it goes in `style`. */}
       <aside
         style={{ backgroundImage: `url(${sidebarBg})` }}
-        className="flex w-66 shrink-0 flex-col overflow-y-auto bg-sidebar bg-cover bg-center bg-no-repeat px-[24px] pt-[26px] pb-[32px] text-sidebar-foreground"
+        className="flex w-66 shrink-0 flex-col overflow-y-auto bg-sidebar bg-cover bg-center bg-no-repeat px-[24px] pt-[26px] pb-[30px] text-sidebar-foreground"
       >
         {sidebar}
         <div className="mt-auto pl-[12px]">
-          <Typography font="secondary" variant="caption">Version {APP_VERSION}</Typography>
+          <Typography font="secondary" variant="caption" className="tracking-tight">
+            Version {APP_VERSION}
+          </Typography>
         </div>
       </aside>
       {/* `isolate` lets the glow sit at -z-10: above main's background, behind the page content. */}
@@ -34,7 +36,7 @@ export function AppLayout({ sidebar, children, footer }: AppLayoutProps) {
         </div>
         {children}
         {footer != null && (
-          <div className="mt-auto py-[24px] px-[32px] flex flex-row items-center justify-between border-t border-divider">
+          <div className="min-h-[90px] mt-auto py-[24px] px-[48px] flex flex-row items-center justify-between border-t border-divider">
             {footer}
           </div>
         )}

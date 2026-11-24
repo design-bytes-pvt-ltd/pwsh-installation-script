@@ -96,7 +96,7 @@ function RequirementsTable({ requirements, className, ...props }: RequirementsTa
           <li key={id} data-status={status} className={rowVariants({ status })}>
             <div className="flex min-w-0 flex-row items-center gap-[14px]">
               <Icon aria-hidden size={20} className="shrink-0 text-requirement-icon" />
-              <Typography variant="body">
+              <Typography variant="body" className="text-[14px]">
                 {label}
               </Typography>
             </div>

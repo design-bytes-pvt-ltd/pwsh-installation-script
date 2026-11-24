@@ -40,12 +40,12 @@ export function RequirementsPage({ status }: { status: FailedRequirements }) {
 
   return (
     <div className="w-full flex flex-col gap-[32px]">
-      <div className="flex flex-col gap-[16px]">
+      <div className="flex flex-col gap-[22px]">
         <div className="w-[48px] h-[48px] rounded-md bg-destructive/10 flex items-center justify-center">
           <Icon aria-hidden size={24} className="text-destructive" />
         </div>
         <div className="flex flex-col gap-[10px]">
-          <Typography variant="h1">
+          <Typography variant="h1" className="tracking-[-0.01em]">
             {status.kind === 'blocked' ? "Your PC needs a few upgrades" : "We couldn't check this computer"}
           </Typography>
           <Typography variant="body" className="text-subtle-foreground">
