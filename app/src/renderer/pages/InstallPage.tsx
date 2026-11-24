@@ -48,12 +48,13 @@ export function InstallPage() {
   const segments = STEP_NAMES.map((name) => ({ id: name, label: SEGMENT_LABELS[name], ...stepSegment(install.steps[name]) }));
 
   return (
-    <div className="w-full flex flex-col gap-[24px]">
+    <div className="w-full flex flex-col gap-[32px]">
       <div className="flex flex-col gap-[10px]">
-        <Typography variant="h1">{title(install.running)}</Typography>
+        <Typography variant="h1" className="tracking-[-0.005em]">
+          {title(install.running)}
+        </Typography>
         <Typography variant="body" className="text-subtle-foreground">
-          We install Ollama, download the AI model that suits this computer, install Docker, then download and start the
-          dev container. You may be asked for your password.
+          Please keep this window open. This takes about 15 minutes.
         </Typography>
       </div>
 

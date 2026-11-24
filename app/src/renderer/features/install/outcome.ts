@@ -43,5 +43,5 @@ const STEP_PHRASES: Record<string, string> = {
 
 /** Completes "Something went wrong while …" for the failed step. */
 export function failedStepPhrase(failure: FailureSummary | undefined): string {
-  return (failure && STEP_PHRASES[failureStep(failure)]) ?? 'setting up Enterprise Brain';
+  return (failure && STEP_PHRASES[failureStep(failure)]) ?? 'setting up.';
 }

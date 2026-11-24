@@ -66,7 +66,7 @@ export function App() {
           </>
         }
       >
-        <div className="flex flex-col flex-1 items-start px-[48px] py-[26px]">
+        <div className="flex flex-col flex-1 items-start px-[32px] py-[32px]">
           <Content />
         </div>
       </AppLayout>
@@ -78,7 +78,7 @@ export function App() {
       sidebar={<SidebarContent stepId={stepId} />}
       footer={
         <>
-          <Typography variant="caption" className="text-subtle-foreground">
+          <Typography variant="caption" className="text-subtle-foreground tracking-[0.005em]">
             {step.footerNote}
           </Typography>
           <div className="flex flex-row items-center gap-2">
@@ -108,7 +108,7 @@ export function App() {
         </>
       }
     >
-      <div className="flex flex-col flex-1 items-start px-[48px] py-[26px]">
+      <div className="flex flex-col flex-1 items-start px-[32px] py-[32px]">
         <step.Content />
       </div>
     </AppLayout>

@@ -62,11 +62,11 @@ function SegmentedProgress({ segments, label = 'Overall progress', className, ..
   return (
     <div
       data-slot="segmented-progress"
-      className={cn('flex flex-col gap-[24px] rounded-[20px] border border-progress-border bg-progress-surface px-[24px] py-[24px]', className)}
+      className={cn('flex flex-col gap-[24px] rounded-[24px] border border-progress-border bg-progress-surface px-[32px] py-[28px]', className)}
       {...props}
     >
       <div className="flex flex-col gap-[4px]">
-        <Typography as="span" className="text-[15px] leading-5 text-subtle-foreground">
+        <Typography as="span" className="text-[13px] leading-5 text-subtle-foreground">
           {label}
         </Typography>
         <Typography
@@ -76,7 +76,7 @@ function SegmentedProgress({ segments, label = 'Overall progress', className, ..
           aria-valuemax={100}
           aria-valuenow={percent}
           aria-label={typeof label === 'string' ? label : 'Overall progress'}
-          className="text-[44px] leading-none font-medium tracking-tight"
+          className="text-[36px] leading-none font-semibold"
         >
           {percent}%
         </Typography>
