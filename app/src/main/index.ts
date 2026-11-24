@@ -181,7 +181,7 @@ function sanitizeOptions(raw: unknown): InstallOptions {
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1000,
-    height: 690,
+    height: 686,
     minWidth: 780,
     minHeight: 580,
     title: 'Enterprise Brain Installer',

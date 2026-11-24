@@ -66,7 +66,7 @@ export function App() {
           </>
         }
       >
-        <div className="flex flex-col flex-1 items-start px-[48px] py-[26px]">
+        <div className="flex flex-col flex-1 items-start px-[32px] py-[26px]">
           <Content />
         </div>
       </AppLayout>
@@ -108,7 +108,7 @@ export function App() {
         </>
       }
     >
-      <div className="flex flex-col flex-1 items-start px-[48px] py-[26px]">
+      <div className="flex flex-col flex-1 items-start px-[32px] py-[26px]">
         <step.Content />
       </div>
     </AppLayout>

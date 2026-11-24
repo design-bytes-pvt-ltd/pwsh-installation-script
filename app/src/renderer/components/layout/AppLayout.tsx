@@ -34,7 +34,7 @@ export function AppLayout({ sidebar, children, footer }: AppLayoutProps) {
         </div>
         {children}
         {footer != null && (
-          <div className="mt-auto py-[24px] px-[48px] flex flex-row items-center justify-between border-t border-divider">
+          <div className="mt-auto py-[24px] px-[32px] flex flex-row items-center justify-between border-t border-divider">
             {footer}
           </div>
         )}
