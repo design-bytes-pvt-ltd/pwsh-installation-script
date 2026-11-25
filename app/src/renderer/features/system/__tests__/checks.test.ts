@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { modelRow, sampleProbe } from '@/test/fakeInstallerApi';
-import { diskTooLow, everythingInstalled, requirementsStatus } from '../checks';
+import { diskTooLow, downloadsNeeded, everythingInstalled, offlineBlocked, requirementsStatus } from '../checks';
 
 const lowDisk = { ...sampleProbe, disk: { path: 'C:\\', freeGB: 20, requiredGB: 60 } };
 
@@ -26,8 +26,33 @@ describe('requirementsStatus', () => {
   test('blocks on low disk space, saying how much is free and needed', () => {
     expect(requirementsStatus(lowDisk, null)).toEqual({
       kind: 'blocked',
+      reason: 'disk',
       message: 'Not enough disk space: 20.0 GB free on C:\\, needs 60 GB',
     });
+  });
+
+  test('blocks when offline with something to download, naming it', () => {
+    const offline = { ...sampleProbe, network: { online: false, unreachable: ['https://ollama.com'] } };
+    expect(requirementsStatus(offline, null)).toEqual({
+      kind: 'blocked',
+      reason: 'offline',
+      message: 'No internet connection: needed to download Docker, the dev container and llama3',
+    });
+    // Low disk space wins: it needs fixing either way.
+    expect(requirementsStatus({ ...offline, disk: lowDisk.disk }, null)).toMatchObject({ reason: 'disk' });
+  });
+
+  test('lets an offline re-run through when everything is already installed', () => {
+    const offlineAllThere = {
+      ...sampleProbe,
+      network: { online: false, unreachable: [] },
+      dockerInstalled: 'desktop' as const,
+      devContainer: 'stopped' as const,
+      models: [modelRow('llama3', { isDefault: true, installed: true })],
+    };
+    expect(downloadsNeeded(offlineAllThere)).toEqual([]);
+    expect(offlineBlocked(offlineAllThere)).toBe(false);
+    expect(requirementsStatus(offlineAllThere, null)).toEqual({ kind: 'ready' });
   });
 
   test('reports a failed probe', () => {

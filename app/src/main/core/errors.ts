@@ -5,6 +5,8 @@
  * update it (see error-report.fixture.test.ts) when you change the format on purpose.
  */
 
+import { NETWORK_ERROR_PATTERNS } from './networkErrors';
+
 export type ElevationKind = 'uac' | 'osascript' | 'pkexec' | 'sudo-askpass' | 'root';
 
 export const ELEVATION_LABELS: Record<string, string> = {
@@ -108,6 +110,11 @@ export const HINTS: Hint[] = [
     text: 'The container registry refused access. Ask an admin to grant your GitHub account access to the package, or check the bundled registry token, then click Retry.',
   },
   {
+    id: 'pull-stalled',
+    pattern: 'download made no progress|download stalled|Unpacking the dev container stalled',
+    text: 'Docker stopped making progress on the dev container. Restart Docker Desktop and check your internet connection (and VPN or proxy), then click Retry.',
+  },
+  {
     id: 'docker-permission',
     pattern: 'permission denied while trying to connect to the docker|docker\\.sock.{0,80}permission denied|pipe/docker_engine.{0,80}Access is denied',
     text: 'Your account cannot use Docker yet. Log out and back in (or restart the computer), then click Retry.',
@@ -121,6 +128,17 @@ export const HINTS: Hint[] = [
     id: 'ollama-unreachable',
     pattern: 'Ollama server did not become reachable|Ollama is not running|(127\\.0\\.0\\.1|localhost):11434',
     text: "The Ollama server is not running. Start the Ollama app (or run 'ollama serve') and try again.",
+  },
+  {
+    id: 'offline',
+    pattern: 'No internet connection',
+    text: "This computer isn't connected to the internet. Check Wi-Fi, VPN or proxy, then click Retry. Downloads continue where they stopped.",
+  },
+  {
+    // Before model-not-found: Ollama reports "pull model manifest: ... no such host" when offline.
+    id: 'network',
+    pattern: [...NETWORK_ERROR_PATTERNS, 'getaddrinfo', 'Failed to download', 'timed out', 'unable to connect', 'certificate verify failed', 'unable to get local issuer certificate'].join('|'),
+    text: 'A network request failed. Check your internet connection, proxy or firewall, then click Retry.',
   },
   {
     id: 'model-not-found',
@@ -158,11 +176,6 @@ export const HINTS: Hint[] = [
     exitCodes: [740],
     pattern: 'requires elevation|0x80070005|Access is denied|Permission denied|EACCES|EPERM|must be run as root|are you root',
     text: 'This step needs administrator rights. Approve the administrator prompt, or run the installer from an administrator account.',
-  },
-  {
-    id: 'network',
-    pattern: 'ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|getaddrinfo|Could not resolve host|Network is unreachable|Failed to download|timed out|unable to connect|certificate verify failed|unable to get local issuer certificate',
-    text: 'A network request failed. Check your internet connection, proxy or firewall, then retry.',
   },
   {
     id: 'command-not-found',

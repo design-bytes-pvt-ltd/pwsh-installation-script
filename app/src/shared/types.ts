@@ -47,6 +47,13 @@ export interface DiskInfo {
   requiredGB: number;
 }
 
+/** Whether the internet answered during the system check. */
+export interface NetworkStatus {
+  online: boolean;
+  /** Download hosts that did not answer (all of them when offline). */
+  unreachable: string[];
+}
+
 export interface ProbeResult {
   os: TargetOS;
   arch: Arch;
@@ -60,6 +67,7 @@ export interface ProbeResult {
   dockerInstalled: DockerKind;
   devContainer: DevContainerStatus;
   models: ModelRow[];
+  network: NetworkStatus;
 }
 
 /** Options the renderer may send. The log path is chosen by the main process, never the renderer. */

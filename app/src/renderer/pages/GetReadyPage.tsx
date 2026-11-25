@@ -9,7 +9,7 @@ import { RequirementsPage } from './Requirements';
 const features = [
   {
     icon: ShieldCheck,
-    description: 'Works fully offline, no internet needed',
+    description: 'Works offline once installed',
   },
   {
     icon: Lock,
@@ -33,10 +33,12 @@ export function GetReadyFooterNote() {
     case 'checking':
       // The progress spinner sits next to the footer button (see App).
       return 'Takes about 30 minutes';
-    case 'error':
     case 'blocked':
-      // The Requirements page in the content area explains what is wrong and offers "Try again".
-      return "Share this list with your IT team";
+      if (status.reason === 'offline') return 'Connect to the internet to continue';
+      return 'Share this list with your IT team';
+    case 'error':
+      // The Requirements page in the content area explains what is wrong.
+      return 'Share this list with your IT team';
     case 'ready':
       return 'Takes about 30 minutes';
   }

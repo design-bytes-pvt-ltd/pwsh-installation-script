@@ -1,9 +1,9 @@
-import { Bot, Cpu, Gpu, HardDrive, MemoryStick, Monitor, ScanSearch } from 'lucide-react';
+import { Bot, Cpu, Gpu, HardDrive, MemoryStick, Monitor, ScanSearch, Wifi } from 'lucide-react';
 import type { Requirement } from '@/components/requirements-table';
 import { recommendedModel } from '@/features/models';
 import { formatGB } from '@/lib/format';
 import type { ProbeResult, TargetOS } from '../../../shared/types';
-import { diskTooLow } from './checks';
+import { diskTooLow, downloadsNeeded, joinNames } from './checks';
 
 const OS_NAMES: Record<TargetOS, string> = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
 
@@ -67,6 +67,19 @@ const REQUIREMENTS: readonly { id: string; icon: Requirement['icon']; check: (pr
       return diskTooLow(probe)
         ? { label, status: 'failed', result: `Needs ${formatGB(disk.requiredGB)} · found ${formatGB(disk.freeGB)}` }
         : { label, status: 'passed' };
+    },
+  },
+  {
+    id: 'network',
+    icon: Wifi,
+    // Setup downloads; the installed app then runs offline. So no internet only fails this when
+    // something is still missing.
+    check: (probe) => {
+      const label = 'Internet connection';
+      if (probe.network.online) return { label, status: 'passed' };
+      const needed = downloadsNeeded(probe);
+      if (needed.length === 0) return { label, status: 'info', result: 'Not needed, everything is installed' };
+      return { label, status: 'failed', result: `Needed to download ${joinNames(needed)}` };
     },
   },
 ];

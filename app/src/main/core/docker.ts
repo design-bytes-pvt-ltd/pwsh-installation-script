@@ -1,14 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { downloadFile } from './downloader';
+import { discardDownload, downloadCachePath, downloadFile } from './downloader';
 import { execElevatedPowerShell, execPrivileged, execPrivilegedScript } from './elevation';
 import { toErrorReport } from './errors';
-import { downloadProgress, logEvent } from './events';
+import { downloadReporting, logEvent, networkReporter } from './events';
 import { execCommand } from './exec';
 import { commandExists, createTempDir, getArch, getOsRelease, getTargetOS, getTargetUser, quotePs, quoteSh, removeDirSafe } from './platform';
 import type { DockerKind, InstallEvent, TargetOS } from '../../shared/types';
 
 const NOTE_MARKER = '@@NOTE ';
+
+/** A finished installer download younger than this is reused on Retry instead of fetched again. */
+const REUSE_DOWNLOAD_MS = 24 * 60 * 60 * 1000;
 
 export async function detectDocker(targetOS: TargetOS = getTargetOS()): Promise<DockerKind> {
   if (targetOS === 'windows') {
@@ -44,27 +47,53 @@ export function buildEngineScript(getDockerPath: string, targetUser: string): st
   return lines.join('\n');
 }
 
+/** curl options for flaky connections: retry dropped and refused connections, don't hang on connect. */
+export const CURL_RETRY = '--retry 5 --retry-delay 3 --retry-connrefused --connect-timeout 20';
+/** apt options for flaky connections. */
+export const APT_RETRY = '-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30';
+
 /** Root script that adds Docker's apt repo and installs the Docker Desktop .deb. */
 export function buildDebianDesktopScript(distro: 'debian' | 'ubuntu', debPath: string): string {
   return [
-    'apt-get update',
-    'apt-get install -y ca-certificates curl',
+    `apt-get ${APT_RETRY} update`,
+    `apt-get ${APT_RETRY} install -y ca-certificates curl`,
     'install -m 0755 -d /etc/apt/keyrings',
-    `curl -fsSL https://download.docker.com/linux/${distro}/gpg -o /etc/apt/keyrings/docker.asc`,
+    `curl -fsSL ${CURL_RETRY} https://download.docker.com/linux/${distro}/gpg -o /etc/apt/keyrings/docker.asc`,
     'chmod a+r /etc/apt/keyrings/docker.asc',
     '. /etc/os-release',
     `echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${distro} \${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list`,
-    'apt-get update',
+    `apt-get ${APT_RETRY} update`,
     // Let apt's sandbox user read the downloaded package.
     `chmod a+rx ${quoteSh(path.dirname(debPath))}`,
     `chmod a+r ${quoteSh(debPath)}`,
-    `apt-get install -y ${quoteSh(debPath)}`,
+    `apt-get ${APT_RETRY} install -y ${quoteSh(debPath)}`,
   ].join('\n');
 }
 
-/** Elevated PowerShell body for Windows: WSL2, Docker Desktop and docker-users membership. */
-export function buildWindowsDockerScript(opts: { installWsl: boolean; arch: string; targetUser: string }): string {
-  const url = `https://desktop.docker.com/win/main/${opts.arch}/Docker%20Desktop%20Installer.exe`;
+/** Root script that adds Docker's dnf repo and installs the downloaded Docker Desktop .rpm. */
+export function buildFedoraDesktopScript(rpmPath: string): string {
+  return [
+    `curl -fsSL ${CURL_RETRY} https://download.docker.com/linux/fedora/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo`,
+    // Let dnf read the package from the user's download folder.
+    `chmod a+rx ${quoteSh(path.dirname(rpmPath))}`,
+    `chmod a+r ${quoteSh(rpmPath)}`,
+    `dnf install -y --setopt=retries=5 --setopt=timeout=30 ${quoteSh(rpmPath)}`,
+  ].join('\n');
+}
+
+/** Docker Desktop's official Windows installer. */
+export function dockerDesktopInstallerUrl(arch: string): string {
+  return `https://desktop.docker.com/win/main/${arch}/Docker%20Desktop%20Installer.exe`;
+}
+
+/**
+ * Elevated PowerShell body for Windows: WSL2, Docker Desktop and docker-users membership.
+ *
+ * The installer is downloaded beforehand, without elevation, by downloadFile (progress, resume,
+ * proxy). The script copies it into the admin-only Windows temp folder first and checks the
+ * signature of that copy, so nothing running as the user can swap the file after the check.
+ */
+export function buildWindowsDockerScript(opts: { installWsl: boolean; installerPath: string; targetUser: string }): string {
   return [
     `$dockerExe = Join-Path $env:ProgramFiles 'Docker\\Docker\\Docker Desktop.exe'`,
     opts.installWsl
@@ -74,15 +103,9 @@ export function buildWindowsDockerScript(opts: { installWsl: boolean; arch: stri
           `'${NOTE_MARKER}Reboot Windows to finish the WSL2 install before starting Docker Desktop.'`,
         ].join('\n')
       : '',
-    "if (Get-Command winget -ErrorAction SilentlyContinue) {",
-    "  try {",
-    "    Invoke-Checked 'winget' @('install', '-e', '--id', 'Docker.DockerDesktop', '--silent', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')",
-    "  } catch { \"winget install failed: $($_.Exception.Message); using the official installer\" }",
-    "}",
     "if (-not (Test-Path $dockerExe)) {",
-    "  $installer = Join-Path ([IO.Path]::GetTempPath()) ('DockerDesktopInstaller-' + [guid]::NewGuid().ToString('N') + '.exe')",
-    `  "Downloading ${url}"`,
-    `  Invoke-WebRequest -Uri ${quotePs(url)} -OutFile $installer -UseBasicParsing -ErrorAction Stop`,
+    "  $installer = Join-Path $env:SystemRoot ('Temp\\DockerDesktopInstaller-' + [guid]::NewGuid().ToString('N') + '.exe')",
+    `  Copy-Item -LiteralPath ${quotePs(opts.installerPath)} -Destination $installer -Force -ErrorAction Stop`,
     "  try {",
     "    $sig = Get-AuthenticodeSignature -FilePath $installer",
     "    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Docker') {",
@@ -146,25 +169,29 @@ export async function installDocker(options: {
       }
     }
     log('info', 'Docker Desktop needs administrator rights; approve the Windows prompt to continue.');
-    await execElevatedPowerShell(
-      buildWindowsDockerScript({ installWsl: !wslReady, arch: await getArch(targetOS), targetUser: getTargetUser() }),
-      exec
-    );
+    // Download first, unelevated: progress, resume after a drop, and the system proxy.
+    const url = dockerDesktopInstallerUrl(await getArch(targetOS));
+    const installer = downloadCachePath(url, 'Docker Desktop Installer.exe');
+    await downloadFile(url, installer, {
+      signal: options.signal,
+      reuseForMs: REUSE_DOWNLOAD_MS,
+      ...downloadReporting(options.emit, 'Docker', 'the Docker Desktop installer'),
+    });
+    await execElevatedPowerShell(buildWindowsDockerScript({ installWsl: !wslReady, installerPath: installer, targetUser: getTargetUser() }), exec);
+    discardDownload(installer);
     if ((await detectDocker(targetOS)) === 'none') throw new Error('Docker installation finished but Docker Desktop was not found.');
     return 'installed';
   }
 
   if (targetOS === 'macos') {
     const arch = await getArch(targetOS);
+    const url = `https://desktop.docker.com/mac/main/${arch}/Docker.dmg`;
+    const dmg = downloadCachePath(url, 'Docker.dmg');
+    await downloadFile(url, dmg, { signal: options.signal, reuseForMs: REUSE_DOWNLOAD_MS, ...downloadReporting(options.emit, 'Docker', 'Docker.dmg') });
     const tmp = createTempDir();
     const mount = path.join(tmp, 'mnt');
     let attached = false;
     try {
-      const dmg = path.join(tmp, 'Docker.dmg');
-      await downloadFile(`https://desktop.docker.com/mac/main/${arch}/Docker.dmg`, dmg, {
-        signal: options.signal,
-        onProgress: downloadProgress(options.emit, 'Docker', 'Downloading Docker.dmg'),
-      });
       fs.mkdirSync(mount, { recursive: true });
       await execCommand('hdiutil', ['attach', dmg, '-nobrowse', '-quiet', '-mountpoint', mount], exec);
       attached = true;
@@ -172,6 +199,7 @@ export async function installDocker(options: {
       await execCommand('codesign', ['--verify', '--deep', path.join(mount, 'Docker.app')], exec);
       log('info', 'Docker Desktop needs administrator rights; enter your password in the macOS prompt.');
       await execPrivileged(installer, ['--accept-license', `--user=${getTargetUser()}`], exec);
+      discardDownload(dmg);
     } finally {
       if (attached) {
         try { await execCommand('hdiutil', ['detach', mount, '-quiet']); } catch { /* ignore */ }
@@ -203,7 +231,10 @@ export async function installDocker(options: {
     const tmp = createTempDir();
     try {
       const scriptPath = path.join(tmp, 'get-docker.sh');
-      await downloadFile('https://get.docker.com', scriptPath, { signal: options.signal });
+      await downloadFile('https://get.docker.com', scriptPath, {
+        signal: options.signal,
+        onNetwork: networkReporter(options.emit, 'Docker', 'downloading the Docker install script'),
+      });
       await execPrivilegedScript(buildEngineScript(scriptPath, getTargetUser()), exec);
     } finally {
       removeDirSafe(tmp);
@@ -219,25 +250,17 @@ export async function installDocker(options: {
   try {
     if (family === 'debian') {
       const distro = id === 'debian' ? 'debian' : 'ubuntu';
-      const tmp = createTempDir();
-      try {
-        const deb = path.join(tmp, 'docker-desktop-amd64.deb');
-        await downloadFile('https://desktop.docker.com/linux/main/amd64/docker-desktop-amd64.deb', deb, {
-          signal: options.signal,
-          onProgress: downloadProgress(options.emit, 'Docker', 'Downloading Docker Desktop'),
-        });
-        await execPrivilegedScript(buildDebianDesktopScript(distro, deb), exec);
-      } finally {
-        removeDirSafe(tmp);
-      }
+      const url = 'https://desktop.docker.com/linux/main/amd64/docker-desktop-amd64.deb';
+      const deb = downloadCachePath(url, 'docker-desktop-amd64.deb');
+      await downloadFile(url, deb, { signal: options.signal, reuseForMs: REUSE_DOWNLOAD_MS, ...downloadReporting(options.emit, 'Docker', 'Docker Desktop') });
+      await execPrivilegedScript(buildDebianDesktopScript(distro, deb), exec);
+      discardDownload(deb);
     } else {
-      await execPrivilegedScript(
-        [
-          'curl -fsSL https://download.docker.com/linux/fedora/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo',
-          'dnf install -y https://desktop.docker.com/linux/main/amd64/docker-desktop-x86_64.rpm',
-        ].join('\n'),
-        exec
-      );
+      const url = 'https://desktop.docker.com/linux/main/amd64/docker-desktop-x86_64.rpm';
+      const rpm = downloadCachePath(url, 'docker-desktop-x86_64.rpm');
+      await downloadFile(url, rpm, { signal: options.signal, reuseForMs: REUSE_DOWNLOAD_MS, ...downloadReporting(options.emit, 'Docker', 'Docker Desktop') });
+      await execPrivilegedScript(buildFedoraDesktopScript(rpm), exec);
+      discardDownload(rpm);
     }
     addNote('Start Docker Desktop from your applications menu (or: systemctl --user start docker-desktop).');
     return 'installed (Desktop)';

@@ -24,6 +24,7 @@ export const sampleProbe: ProbeResult = {
   ollamaPath: '/usr/bin/ollama',
   dockerInstalled: 'none',
   devContainer: 'missing',
+  network: { online: true, unreachable: [] },
   gpu: null,
   models: [
     modelRow('llama3', { isDefault: true, sizeGB: 4.7 }),

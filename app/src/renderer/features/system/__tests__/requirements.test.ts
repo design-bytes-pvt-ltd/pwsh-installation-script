@@ -9,7 +9,7 @@ const table = (probe: ProbeResult | null, error: string | null = null) =>
 
 describe('requirementResults', () => {
   test('lists every system check, in order', () => {
-    expect(requirementResults(sampleProbe, null).map((r) => r.id)).toEqual(['os', 'cpu', 'ram', 'gpu', 'model-memory', 'disk']);
+    expect(requirementResults(sampleProbe, null).map((r) => r.id)).toEqual(['os', 'cpu', 'ram', 'gpu', 'model-memory', 'disk', 'network']);
     expect(table({ ...sampleProbe, ollamaInstalled: false })).toEqual({
       os: ['Linux', 'passed', undefined],
       cpu: ['64-bit Intel or AMD processor', 'passed', undefined],
@@ -17,7 +17,24 @@ describe('requirementResults', () => {
       gpu: ['Graphics card', 'info', 'None found, AI runs on the processor'],
       'model-memory': ['12.0 GB for AI models', 'passed', undefined],
       disk: ['60 GB free space', 'passed', undefined],
+      network: ['Internet connection', 'passed', undefined],
     });
+  });
+
+  test('no internet fails the check only while something still needs downloading', () => {
+    const offline = { online: false, unreachable: ['https://ollama.com'] };
+    const missing = { ...sampleProbe, network: offline, ollamaInstalled: false, models: [modelRow('qwen3:8b', { isDefault: true })] };
+    expect(table(missing).network).toEqual(['Internet connection', 'failed', 'Needed to download Ollama, Docker, the dev container and qwen3:8b']);
+    const allThere = {
+      ...sampleProbe,
+      network: offline,
+      dockerInstalled: 'desktop' as const,
+      devContainer: 'stopped' as const,
+      models: [modelRow('qwen3:8b', { isDefault: true, installed: true })],
+    };
+    expect(table(allThere).network).toEqual(['Internet connection', 'info', 'Not needed, everything is installed']);
+    // Docker not running: the dev container may be there, so it doesn't count as a download.
+    expect(table({ ...allThere, devContainer: 'unknown' }).network[1]).toBe('info');
   });
 
   test('leaves out what is already installed', () => {

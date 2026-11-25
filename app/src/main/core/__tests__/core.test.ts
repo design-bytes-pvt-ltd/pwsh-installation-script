@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeDiskInfo, computeModelBudget, diskCheckPath, parseNvidiaSmiOutput, parseRocmSmiJson, REQUIRED_DISK_GB } from '../hardware';
 import { pullMissingModels } from '../orchestrator';
 import { buildModelRows, getModelMinMemory, getModelTier, getOllamaBaseUrl, loadModelCatalog, normalizeModelKey } from '../models';
-import { buildEngineScript, buildWindowsDockerScript } from '../docker';
-import { parsePullLine } from '../ollama';
+import { APT_RETRY, buildDebianDesktopScript, buildEngineScript, buildFedoraDesktopScript, buildWindowsDockerScript, CURL_RETRY } from '../docker';
+import { ModelPullStalledError, parsePullLine, pullModelStream } from '../ollama';
+import { isRetryableError } from '../network';
 import { execCommand, LineSplitter } from '../exec';
 import {
   buildComposeArgs,
@@ -102,6 +103,58 @@ describe('pullMissingModels', () => {
     const result = await pullMissingModels(['llama3.2:3b'], 'http://ollama', () => {}, () => {});
     expect(result).toEqual({ pulled: [], skipped: ['llama3.2:3b'], failed: [] });
     expect(pullCalls(fetchMock)).toEqual([]);
+  });
+
+  it('retries a model whose pull hit a network error; Ollama resumes it', async () => {
+    let pulls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.endsWith('/api/tags')) return new Response(JSON.stringify({ models: [] }));
+        pulls++;
+        return new Response(
+          pulls === 1
+            ? '{"status":"pulling manifest"}\n{"error":"pull model manifest: Get \\"https://registry.ollama.ai/v2/library/qwen3/manifests/8b\\": dial tcp: lookup registry.ollama.ai: no such host"}\n'
+            : '{"status":"pulling"}\n{"status":"success"}\n'
+        );
+      })
+    );
+    const logs: string[] = [];
+    const reports: string[] = [];
+    const result = await pullMissingModels(
+      ['qwen3:8b'],
+      'http://ollama',
+      (e) => e.type === 'log' && logs.push(e.message),
+      (r) => reports.push(r.summary),
+      undefined,
+      { isOnline: async () => true, backoffMs: [0] }
+    );
+    expect(result).toEqual({ pulled: ['qwen3:8b'], skipped: [], failed: [] });
+    expect(pulls).toBe(2);
+    expect(reports).toEqual([]);
+    expect(logs.some((l) => /no such host Trying again \(2 of 4\)/.test(l))).toBe(true);
+  });
+
+  it('aborts a model pull that stops making progress', async () => {
+    vi.useFakeTimers();
+    try {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"status":"pulling abc","completed":10,"total":100}\n'));
+          // ...and nothing more.
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(body)));
+      const pending = pullModelStream('qwen3:8b', 'http://ollama', () => {}, undefined, { downloadMs: 180_000, otherMs: 600_000 }).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(179_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const err = await pending;
+      expect(err).toBeInstanceOf(ModelPullStalledError);
+      expect(err.message).toBe('No progress while pulling qwen3:8b for 3 minutes.');
+      expect(isRetryableError(err)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('matches an installed model regardless of the :latest tag', async () => {
@@ -242,12 +295,32 @@ describe('privileged scripts', () => {
   });
 
   it('Windows script installs WSL only when needed and uses Add-LocalGroupMember', () => {
-    const withWsl = buildWindowsDockerScript({ installWsl: true, arch: 'amd64', targetUser: "CORP\\o'neil" });
+    const installerPath = "C:\\Users\\o'neil\\AppData\\Local\\Temp\\x\\Docker Desktop Installer.exe";
+    const withWsl = buildWindowsDockerScript({ installWsl: true, installerPath, targetUser: "CORP\\o'neil" });
     expect(withWsl).toContain("'--install', '--no-distribution'");
     expect(withWsl).toContain("$user = 'CORP\\o''neil'");
     expect(withWsl).toContain('Add-LocalGroupMember');
     expect(withWsl).not.toContain('net localgroup');
-    expect(buildWindowsDockerScript({ installWsl: false, arch: 'arm64', targetUser: 'ann' })).not.toContain('wsl.exe');
+    expect(buildWindowsDockerScript({ installWsl: false, installerPath, targetUser: 'ann' })).not.toContain('wsl.exe');
+  });
+
+  it('Windows script installs the pre-downloaded installer from an admin-only copy', () => {
+    const script = buildWindowsDockerScript({ installWsl: false, installerPath: "C:\\Users\\o'neil\\dl\\setup.exe", targetUser: 'ann' });
+    // The download happens beforehand (resumable, via the system proxy), not inside the elevated script.
+    expect(script).not.toMatch(/Invoke-WebRequest|winget/);
+    expect(script).toContain("Copy-Item -LiteralPath 'C:\\Users\\o''neil\\dl\\setup.exe' -Destination $installer");
+    expect(script).toContain("Join-Path $env:SystemRoot ('Temp\\DockerDesktopInstaller-'");
+    // The signature is checked on the copy, after copying.
+    expect(script.indexOf('Copy-Item')).toBeLessThan(script.indexOf('Get-AuthenticodeSignature -FilePath $installer'));
+  });
+
+  it('Linux scripts retry flaky downloads', () => {
+    const deb = buildDebianDesktopScript('ubuntu', '/tmp/x/docker-desktop-amd64.deb');
+    expect(deb.split('\n').filter((l) => l.startsWith('apt-get ')).every((l) => l.includes(APT_RETRY))).toBe(true);
+    expect(deb).toContain(`curl -fsSL ${CURL_RETRY} https://download.docker.com/linux/ubuntu/gpg`);
+    const rpm = buildFedoraDesktopScript("/tmp/it's/docker-desktop-x86_64.rpm");
+    expect(rpm).toContain(`curl -fsSL ${CURL_RETRY} `);
+    expect(rpm).toContain("dnf install -y --setopt=retries=5 --setopt=timeout=30 '/tmp/it'\\''s/docker-desktop-x86_64.rpm'");
   });
 });
 
@@ -496,6 +569,18 @@ describe('dev container pull progress', () => {
     for (let i = 1; i < percents.length; i++) expect(percents[i]).toBeGreaterThanOrEqual(percents[i - 1]);
     expect(Math.max(...percents)).toBeLessThan(90);
     expect(tracker.tick(130_000 * 1000)?.label).toBe('Downloading the dev container (4.00 GB)... 2166m 40s');
+  });
+
+  it('shows the time waited at 0%, not an estimate, when the source reports bytes', () => {
+    const tracker = new PullProgressTracker({ estimate: false });
+    tracker.setExpectedLayers(imageSizes);
+    expect(tracker.tick(45_000)).toEqual({ label: 'Preparing the dev container... 45s', percent: 0 });
+    expect(tracker.tick(600_000)).toEqual({ label: 'Preparing the dev container... 10m 00s', percent: 0 });
+    expect(tracker.update(layer('26538842dfbf', 'Downloading', { current: 400_000_000, total: 1 }))).toEqual({
+      label: 'Downloading the dev container: 400 MB of 4.00 GB',
+      percent: 9,
+    });
+    expect(tracker.tick(700_000)).toBeNull();
   });
 
   it('counts finished layers by their manifest size, even without Downloading lines', () => {

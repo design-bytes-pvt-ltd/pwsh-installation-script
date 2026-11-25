@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { downloadFile } from './downloader';
+import { discardDownload, downloadCachePath, downloadFile } from './downloader';
 import { getOllamaBaseUrl } from './models';
 import { execPrivileged, execPrivilegedScript } from './elevation';
-import { downloadProgress, logEvent } from './events';
+import { downloadReporting, logEvent, networkReporter } from './events';
 import { execCommand } from './exec';
 import { commandExists, createTempDir, getTargetOS, quotePs, quoteSh, removeDirSafe } from './platform';
 import type { InstallEvent, TargetOS } from '../../shared/types';
@@ -91,6 +91,9 @@ async function verifyAuthenticode(file: string, exec: { signal?: AbortSignal; on
   }
 }
 
+/** A finished installer download younger than this is reused on Retry instead of fetched again. */
+const REUSE_DOWNLOAD_MS = 24 * 60 * 60 * 1000;
+
 export async function installOllama(options: {
   dryRun?: boolean;
   signal?: AbortSignal;
@@ -125,27 +128,28 @@ export async function installOllama(options: {
       }
     }
     if (!installedViaWinget || !(await getOllamaExe(targetOS))) {
-      const tmp = createTempDir();
-      try {
-        const exe = path.join(tmp, 'OllamaSetup.exe');
-        await downloadFile('https://ollama.com/download/OllamaSetup.exe', exe, {
-          signal: options.signal,
-          onProgress: downloadProgress(options.emit, 'Ollama', 'Downloading OllamaSetup.exe'),
-        });
-        await verifyAuthenticode(exe, { signal: options.signal, onOutput });
-        await execCommand(exe, ['/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES'], { signal: options.signal, onOutput });
-      } finally {
-        removeDirSafe(tmp);
-      }
+      // Kept between runs, so a dropped or cancelled download resumes on Retry.
+      const url = 'https://ollama.com/download/OllamaSetup.exe';
+      const exe = downloadCachePath(url, 'OllamaSetup.exe');
+      await downloadFile(url, exe, {
+        signal: options.signal,
+        reuseForMs: REUSE_DOWNLOAD_MS,
+        ...downloadReporting(options.emit, 'Ollama', 'OllamaSetup.exe'),
+      });
+      await verifyAuthenticode(exe, { signal: options.signal, onOutput });
+      await execCommand(exe, ['/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES'], { signal: options.signal, onOutput });
+      discardDownload(exe);
     }
   } else if (targetOS === 'macos') {
+    const url = 'https://ollama.com/download/Ollama-darwin.zip';
+    const zip = downloadCachePath(url, 'Ollama-darwin.zip');
+    await downloadFile(url, zip, {
+      signal: options.signal,
+      reuseForMs: REUSE_DOWNLOAD_MS,
+      ...downloadReporting(options.emit, 'Ollama', 'Ollama-darwin.zip'),
+    });
     const tmp = createTempDir();
     try {
-      const zip = path.join(tmp, 'Ollama-darwin.zip');
-      await downloadFile('https://ollama.com/download/Ollama-darwin.zip', zip, {
-        signal: options.signal,
-        onProgress: downloadProgress(options.emit, 'Ollama', 'Downloading Ollama-darwin.zip'),
-      });
       // Extract and verify the signature before anything lands in /Applications.
       const extracted = path.join(tmp, 'extracted');
       await execCommand('ditto', ['-x', '-k', zip, extracted], { signal: options.signal, onOutput });
@@ -157,6 +161,7 @@ export async function installOllama(options: {
         await execPrivileged('ditto', [app, '/Applications/Ollama.app'], { signal: options.signal, onOutput });
       }
       await execCommand('open', ['-a', '/Applications/Ollama.app'], { signal: options.signal, onOutput });
+      discardDownload(zip);
     } finally {
       removeDirSafe(tmp);
     }
@@ -166,7 +171,10 @@ export async function installOllama(options: {
     const tmp = createTempDir();
     try {
       const scriptPath = path.join(tmp, 'ollama-install.sh');
-      await downloadFile('https://ollama.com/install.sh', scriptPath, { signal: options.signal });
+      await downloadFile('https://ollama.com/install.sh', scriptPath, {
+        signal: options.signal,
+        onNetwork: networkReporter(options.emit, 'Ollama', 'downloading the Ollama install script'),
+      });
       await execPrivilegedScript(`sh ${quoteSh(scriptPath)}`, { signal: options.signal, onOutput });
     } finally {
       removeDirSafe(tmp);
@@ -199,49 +207,102 @@ export function parsePullLine(line: string): PullProgress {
   return { status: chunk.status ?? 'pulling', completed: chunk.completed, total: chunk.total, percent };
 }
 
+/** No progress while pulling for too long. Ollama keeps what it has, so a retry resumes. */
+export class ModelPullStalledError extends Error {
+  readonly networkRetryable = true;
+  constructor(model: string, idleMs: number) {
+    super(`No progress while pulling ${model} for ${Math.round(idleMs / 60_000)} minutes.`);
+    this.name = 'ModelPullStalledError';
+  }
+}
+
+export interface PullWatchdogLimits {
+  /** Bytes not moving while a layer downloads. */
+  downloadMs: number;
+  /** Other phases (manifest, verifying the digest of a big model, writing it): little to report. */
+  otherMs: number;
+}
+
+/**
+ * Streams /api/pull. A watchdog aborts the pull when neither the status nor the byte count changes
+ * for too long, so a hung connection fails (and can be retried) instead of hanging the step.
+ */
 export async function pullModelStream(
   modelName: string,
   baseUrl: string,
   onProgress: (progress: PullProgress) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  limits: PullWatchdogLimits = { downloadMs: 180_000, otherMs: 600_000 }
 ): Promise<void> {
-  const resp = await fetch(`${baseUrl}/api/pull`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: modelName, stream: true }),
-    signal,
-  });
-
-  if (!resp.ok || !resp.body) {
-    const detail = await resp.text().catch(() => '');
-    throw new Error(`Failed to pull ${modelName}: HTTP ${resp.status} ${resp.statusText} ${detail}`.trim());
-  }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let lastStatus = '';
-
-  const handle = (rawLine: string) => {
-    const line = rawLine.trim();
-    if (!line) return;
-    const progress = parsePullLine(line);
-    lastStatus = progress.status;
-    onProgress(progress);
+  const stop = new AbortController();
+  const combined = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+  let lastKey = '';
+  let lastChange = Date.now();
+  let downloading = false;
+  let stalledAfter = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  const watchdog = setInterval(() => {
+    const limit = downloading ? limits.downloadMs : limits.otherMs;
+    if (!stalledAfter && Date.now() - lastChange >= limit) {
+      stalledAfter = Date.now() - lastChange;
+      stop.abort();
+      // Also end the read directly, in case the body ignores the abort.
+      reader?.cancel().catch(() => {});
+    }
+  }, 1_000);
+  const rethrow = (err: unknown): never => {
+    if (stalledAfter && !signal?.aborted) throw new ModelPullStalledError(modelName, stalledAfter);
+    throw err;
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    lines.forEach(handle);
-  }
-  handle(buffer + decoder.decode());
+  try {
+    const resp = await fetch(`${baseUrl}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelName, stream: true }),
+      signal: combined,
+    }).catch(rethrow);
 
-  // The stream ends with {"status":"success"}; anything else means it was cut off.
-  if (lastStatus !== 'success') {
-    throw new Error(`Pull of ${modelName} ended unexpectedly (last status: ${lastStatus || 'none'}).`);
+    if (!resp.ok || !resp.body) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(`Failed to pull ${modelName}: HTTP ${resp.status} ${resp.statusText} ${detail}`.trim());
+    }
+
+    reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let lastStatus = '';
+
+    const handle = (rawLine: string) => {
+      const line = rawLine.trim();
+      if (!line) return;
+      const progress = parsePullLine(line);
+      lastStatus = progress.status;
+      const key = `${progress.status}|${progress.completed ?? ''}`;
+      if (key !== lastKey) {
+        lastKey = key;
+        lastChange = Date.now();
+      }
+      downloading = typeof progress.total === 'number' && progress.total > 0 && (progress.completed ?? 0) < progress.total;
+      onProgress(progress);
+    };
+
+    while (true) {
+      const { done, value } = await reader.read().catch(rethrow);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      lines.forEach(handle);
+    }
+    if (stalledAfter && !signal?.aborted) throw new ModelPullStalledError(modelName, stalledAfter);
+    handle(buffer + decoder.decode());
+
+    // The stream ends with {"status":"success"}; anything else means it was cut off.
+    if (lastStatus !== 'success') {
+      throw new Error(`Pull of ${modelName} ended unexpectedly (last status: ${lastStatus || 'none'}).`);
+    }
+  } finally {
+    clearInterval(watchdog);
   }
 }

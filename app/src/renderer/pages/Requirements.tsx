@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { HardDrive, Loader2, TriangleAlert, X } from 'lucide-react';
 import { Button } from '@/components/button';
 import { RequirementsTable } from '@/components/requirements-table';
@@ -6,10 +6,16 @@ import { Typography } from '@/components/typography';
 import { MIN_REQUIREMENTS_CHECK_MS, requirementResults, useReprobe, type RequirementsStatus } from '@/features/system';
 import { useAppState } from '@/store';
 
+/** How often the page checks again while setup waits for the internet. */
+export const OFFLINE_RECHECK_MS = 10_000;
+
 type FailedRequirements = Extract<RequirementsStatus, { kind: 'error' | 'blocked' }>;
 
 /** What the person can do about it. */
 function hint(status: FailedRequirements, disk: { freeGB: number; requiredGB: number; path: string } | null | undefined): string {
+  if (status.kind === 'blocked' && status.reason === 'offline') {
+    return 'Connect to the internet (check Wi-Fi, VPN or proxy). This page checks again by itself.';
+  }
   if (status.kind === 'blocked' && disk) {
     const needed = Math.ceil(disk.requiredGB - disk.freeGB);
     return `Free up at least ${needed} GB on ${disk.path} (empty the Trash or Recycle Bin, or remove large files you no longer need), then check again.`;
@@ -34,6 +40,15 @@ export function RequirementsPage({ status }: { status: FailedRequirements }) {
       setChecking(false);
     }
   };
+
+  // Offline: look again every few seconds, so setup can go on as soon as the connection is back.
+  const offline = status.kind === 'blocked' && status.reason === 'offline';
+  const recheck = useReprobe(0);
+  useEffect(() => {
+    if (!offline) return;
+    const timer = setInterval(() => void recheck(), OFFLINE_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [offline, recheck]);
   
 
   const Icon = status.kind === 'blocked' ? X : TriangleAlert;
@@ -46,10 +61,10 @@ export function RequirementsPage({ status }: { status: FailedRequirements }) {
         </div>
         <div className="flex flex-col gap-[10px]">
           <Typography variant="h1" className="tracking-[-0.01em]">
-            {status.kind === 'blocked' ? "Your PC needs a few upgrades" : "We couldn't check this computer"}
+            {offline ? 'Setup needs an internet connection' : status.kind === 'blocked' ? 'Your PC needs a few upgrades' : "We couldn't check this computer"}
           </Typography>
           <Typography variant="body" className="text-subtle-foreground">
-            Fix the items marked below, then check again.
+            {offline ? hint(status, probe?.disk) : 'Fix the items marked below, then check again.'}
           </Typography>
         </div>
       </div>

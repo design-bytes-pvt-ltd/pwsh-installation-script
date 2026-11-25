@@ -1,8 +1,9 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, net, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadLaunchUrl } from './core/appConfig';
 import { dismissDockerDesktop, isDockerDesktopFrontmost } from './core/containers';
+import { setNetworkFetch } from './core/network';
 import { defaultLogDir, describeOptions, describeSystem, fileStamp, InstallLogger, pruneOldLogs } from './core/logger';
 import { type InstallResources, probeSystem, runInstall } from './core/orchestrator';
 import { getTargetOS } from './core/platform';
@@ -215,6 +216,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // Internet downloads go through Chromium's network stack: the system proxy (and PAC script) and
+  // the OS certificate store, which corporate networks rely on. Node's own fetch ignores both.
+  setNetworkFetch((url, init) => net.fetch(url, init));
+
   ipcMain.handle('system:probe', async () => {
     return probeSystem(resolveModelsPath());
   });

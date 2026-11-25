@@ -1,24 +1,26 @@
 import { detectDevContainer, startContainers } from './containers';
 import { detectDocker, installDocker } from './docker';
 import { ErrorReport, ReportedError, toErrorReport } from './errors';
-import { logEvent } from './events';
+import { logEvent, networkReporter } from './events';
 import { computeModelBudget, getDiskInfo, getGpuMemoryGB, getSystemMemoryGB } from './hardware';
 import { buildModelRows, getInstalledModels, getOllamaBaseUrl, loadModelCatalog, normalizeModelKey } from './models';
 import { getOllamaExe, installOllama, pullModelStream, waitForOllamaServer } from './ollama';
 import type { InstallLogger } from './logger';
+import { checkConnectivity, type RetryOptions, withNetworkRetry } from './network';
 import { getArch, getTargetOS } from './platform';
 import type { InstallEvent, InstallOptions, ProbeResult, StepName } from '../../shared/types';
 
 /** Checks everything at once: the detections that don't depend on each other run in parallel. */
 export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
   const os = getTargetOS();
-  const [arch, gpu, disk, ollamaPath, dockerInstalled, installed] = await Promise.all([
+  const [arch, gpu, disk, ollamaPath, dockerInstalled, installed, connectivity] = await Promise.all([
     getArch(os),
     getGpuMemoryGB(os),
     getDiskInfo(os),
     getOllamaExe(os),
     detectDocker(os),
     getInstalledModels(getOllamaBaseUrl(), os),
+    checkConnectivity(),
   ]);
   // These need a result from above.
   const devContainer = await detectDevContainer(dockerInstalled, os);
@@ -36,6 +38,7 @@ export async function probeSystem(catalogPath?: string): Promise<ProbeResult> {
     dockerInstalled,
     devContainer,
     models,
+    network: { online: connectivity.online, unreachable: connectivity.unreachable.map((u) => u.url) },
   };
 }
 
@@ -55,7 +58,9 @@ export async function pullMissingModels(
   baseUrl: string,
   emit: (event: InstallEvent) => void,
   report: (r: ErrorReport) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Overrides for the network retries (tests). */
+  retry: Omit<RetryOptions, 'signal' | 'onEvent'> = {}
 ): Promise<PullResult> {
   // Checked here rather than trusting the probe, which may predate this run.
   const installed = await getInstalledModels(baseUrl);
@@ -69,11 +74,16 @@ export async function pullMissingModels(
     }
     emit(logEvent(`Pulling ${model}`));
     try {
-      await pullModelStream(
-        model,
-        baseUrl,
-        (p) => emit({ type: 'progress', step: 'Models', label: `${model}: ${p.status}`, completed: p.completed, total: p.total, percent: p.percent }),
-        signal
+      // Ollama keeps the layers it already has, so each retry continues the download.
+      await withNetworkRetry(
+        () =>
+          pullModelStream(
+            model,
+            baseUrl,
+            (p) => emit({ type: 'progress', step: 'Models', label: `${model}: ${p.status}`, completed: p.completed, total: p.total, percent: p.percent }),
+            signal
+          ),
+        { signal, onEvent: networkReporter(emit, 'Models', `downloading ${model}`), ...retry }
       );
       emit(logEvent(`Pulled ${model}`));
       result.pulled.push(model);

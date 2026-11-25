@@ -11,6 +11,7 @@ const probe: ProbeResult = {
   ollamaPath: null,
   dockerInstalled: 'none',
   devContainer: 'missing',
+  network: { online: true, unreachable: [] },
   gpu: null,
   models: [],
 };

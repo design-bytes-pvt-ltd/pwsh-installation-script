@@ -2,9 +2,23 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { detectDocker } from './docker';
+import {
+  encodeRegistryAuth,
+  EngineUnavailableError,
+  engineError,
+  isLayerId,
+  type OpenPullStream,
+  pullImageViaEngine,
+  PullStalledError,
+  readDockerLogin,
+  resolveDockerSocket,
+  type WatchdogLimits,
+} from './enginePull';
 import { CommandError } from './errors';
-import { logEvent } from './events';
+import { logEvent, networkReporter } from './events';
 import { execCommand } from './exec';
+import { formatBytes, formatElapsed } from './format';
+import { checkConnectivity, errorText, isRetryableError, isRetryableText, OfflineError, type RetryOptions, withNetworkRetry } from './network';
 import { getTargetOS } from './platform';
 import type { DevContainerStatus, DockerKind, InstallEvent, TargetOS } from '../../shared/types';
 
@@ -298,20 +312,7 @@ export async function detectDevContainer(
   }
 }
 
-/** Bytes as progress text, in the decimal units Docker uses: "850 KB", "312 MB", "1.21 GB". */
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
-  if (bytes >= 1e7) return `${Math.round(bytes / 1e6)} MB`;
-  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
-  if (bytes >= 1e3) return `${Math.round(bytes / 1e3)} KB`;
-  return `${bytes} B`;
-}
-
-/** Elapsed time as progress text: "45s", "2m 10s". */
-export function formatElapsed(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
-}
+export { formatBytes, formatElapsed } from './format';
 
 /** One line of `docker compose --progress json pull`. Layer lines carry `parent_id` (the image). */
 export interface ComposeProgressEvent {
@@ -366,10 +367,13 @@ interface LayerState {
  * (ghcr.io with the containerd image store) only "Pulling" and "Pulled" arrive, minutes apart. So:
  * - layer sizes come from the registry manifest when known (`setExpectedLayers`), else from events;
  * - bytes are counted from "Downloading" events and from finished layers;
- * - without any byte counts, `tick()` shows an estimate that slows down and stops below 90%;
+ * - without any byte counts, `tick()` shows an estimate that slows down and stops below 90%
+ *   (only with `estimate: true`; a source that reports bytes shows the time waited at 0% instead);
  * - downloading fills 0–90%, unpacking 90–100%, and the percentage never goes backwards.
  */
 export class PullProgressTracker {
+  /** Show a time-based estimate while no byte counts arrive. Off when the source reports bytes. */
+  estimate: boolean;
   private readonly layers = new Map<string, LayerState>();
   private expected = new Map<string, number>();
   private image: { current: number; total: number } | null = null;
@@ -380,6 +384,10 @@ export class PullProgressTracker {
   private maxPercent = 0;
   private last: PullStatus | null = null;
   private readonly counts = new Map<string, number>();
+
+  constructor(options: { estimate?: boolean } = {}) {
+    this.estimate = options.estimate ?? true;
+  }
 
   /** Applies one event. Returns the status to show when it changed, else null. */
   update(event: ComposeProgressEvent): PullStatus | null {
@@ -481,7 +489,7 @@ export class PullProgressTracker {
   }
 
   private estimatePercent(totalBytes: number): number {
-    if (this.sawBytes || this.elapsedMs <= 0) return 0;
+    if (!this.estimate || this.sawBytes || this.elapsedMs <= 0) return 0;
     const tau = totalBytes > 0 ? (totalBytes / ESTIMATE_BYTES_PER_SEC) * 1000 : ESTIMATE_DEFAULT_TAU_MS;
     return DOWNLOAD_BAND * (1 - Math.exp(-this.elapsedMs / tau));
   }
@@ -500,6 +508,7 @@ export class PullProgressTracker {
       return { label: `Downloading the dev container: ${m.downloaded} of ${m.layers} layers`, percent };
     }
     if (this.sawBytes || this.elapsedMs <= 0) return null;
+    if (!this.estimate) return { label: `Preparing the dev container... ${formatElapsed(this.elapsedMs)}`, percent: 0 };
     const size = m.total > 0 ? ` (${formatBytes(m.total)})` : '';
     return { label: `Downloading the dev container${size}... ${formatElapsed(this.elapsedMs)}`, percent };
   }
@@ -573,57 +582,131 @@ export function parsePlatform(value: string | undefined, arch: string = process.
   return { os: 'linux', architecture: arch === 'x64' ? 'amd64' : arch };
 }
 
-const LAYER_SIZE_TIMEOUT_MS = 20_000;
+const REGISTRY_CHECK_TIMEOUT_MS = 20_000;
+
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  return signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
+}
+
+export interface ComposeImage {
+  image: string;
+  platform?: string;
+}
+
+/** The images in the compose file, with the platform each one asks for. */
+export async function listComposeImages(cli: string, composePath: string, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<ComposeImage[]> {
+  const res = await execCommand(cli, buildComposeArgs(composePath, 'config', '--format', 'json'), {
+    env,
+    signal: withTimeout(signal, REGISTRY_CHECK_TIMEOUT_MS),
+  });
+  const services = Object.values((JSON.parse(res.stdout)?.services ?? {}) as Record<string, { image?: unknown; platform?: unknown }>);
+  return services
+    .filter((s): s is { image: string; platform?: unknown } => typeof s.image === 'string' && s.image.length > 0)
+    .map((s) => ({ image: s.image, platform: typeof s.platform === 'string' ? s.platform : undefined }));
+}
+
+/** Registry answers that mean "you may not have this image": retrying or downloading won't help. */
+export const REGISTRY_REFUSED = /\bunauthorized\b|\bdenied\b|manifest unknown|no such manifest/i;
+
+export type RegistryAccess =
+  | { kind: 'ok'; sizes: Map<string, number> | null }
+  | { kind: 'refused'; image: string; output: string[] }
+  | { kind: 'unknown'; reason: string };
 
 /**
- * Layer sizes of every image in the compose file, read from the registry. Best effort: null when
- * the registry or the docker CLI can't tell (old CLI, no manifest support, timeout).
+ * Asks the registry for each image's manifest (nothing is downloaded): whether this computer may
+ * pull it, and its layer sizes. `unknown` when the registry or CLI can't tell (old CLI, timeout).
  */
-export async function fetchLayerSizes(
+export async function checkRegistryAccess(
   cli: string,
-  composePath: string,
+  images: ComposeImage[],
   env: NodeJS.ProcessEnv,
-  signal: AbortSignal
-): Promise<Map<string, number> | null> {
-  const opts = { env, signal: AbortSignal.any([signal, AbortSignal.timeout(LAYER_SIZE_TIMEOUT_MS)]) };
-  const config = JSON.parse((await execCommand(cli, buildComposeArgs(composePath, 'config', '--format', 'json'), opts)).stdout);
-  const services = Object.values((config?.services ?? {}) as Record<string, { image?: string; platform?: string }>);
+  signal?: AbortSignal
+): Promise<RegistryAccess> {
   const sizes = new Map<string, number>();
-  for (const service of services) {
-    if (!service.image) continue;
-    const res = await execCommand(cli, ['manifest', 'inspect', '--verbose', service.image], opts);
-    const layers = parseManifestLayers(JSON.parse(res.stdout), parsePlatform(service.platform));
-    if (!layers) return null;
-    for (const [id, size] of layers) sizes.set(id, size);
+  let sizesKnown = true;
+  for (const { image, platform } of images) {
+    let stdout: string;
+    try {
+      stdout = (await execCommand(cli, ['manifest', 'inspect', '--verbose', image], { env, signal: withTimeout(signal, REGISTRY_CHECK_TIMEOUT_MS) }))
+        .stdout;
+    } catch (err) {
+      if (signal?.aborted) throw new Error('Cancelled');
+      const output = err instanceof CommandError ? err.outputTail : [(err as Error)?.message ?? String(err)];
+      if (REGISTRY_REFUSED.test(output.join('\n'))) return { kind: 'refused', image, output };
+      return { kind: 'unknown', reason: output.at(-1) ?? 'no output' };
+    }
+    try {
+      const layers = parseManifestLayers(JSON.parse(stdout), parsePlatform(platform));
+      if (layers) for (const [id, size] of layers) sizes.set(id, size);
+      else sizesKnown = false;
+    } catch {
+      sizesKnown = false;
+    }
   }
-  return sizes.size > 0 ? sizes : null;
+  return { kind: 'ok', sizes: sizesKnown && sizes.size > 0 ? sizes : null };
 }
 
 /** Older Docker Compose versions have no `--progress json`. */
 export const NO_JSON_PROGRESS = /unknown flag: --progress|invalid progress|unsupported (--)?progress/i;
-/** Network trouble worth another try: Docker resumes the layers it already has. */
-export const TRANSIENT_PULL_ERROR =
-  /context deadline exceeded|i\/o timeout|TLS handshake timeout|connection reset|connection refused|unexpected EOF|net\/http: request canceled|toomanyrequests|\b50[234]\b/i;
-const PERMANENT_PULL_ERROR = /unauthorized|denied|manifest unknown|not found/i;
-
+/** Network trouble or a busy registry: worth another try (Docker resumes the layers it has). */
 export function isTransientPullError(output: string): boolean {
-  return TRANSIENT_PULL_ERROR.test(output) && !PERMANENT_PULL_ERROR.test(output);
+  return isRetryableText(output);
 }
 
 const PULL_RETRY_DELAYS_MS = [3_000, 10_000];
 
+/** The registry host of an image reference, or null for Docker Hub. */
+export function registryOf(image: string): string | null {
+  const first = image.split('/')[0];
+  return image.includes('/') && (first.includes('.') || first.includes(':') || first === 'localhost') ? first : null;
+}
+
+export interface PullOptions {
+  retryDelaysMs?: number[];
+  /** The bundled ghcr.io login, if any; otherwise the docker CLI's own saved login is used. */
+  credentials?: RegistryCredentials | null;
+  watchdog?: WatchdogLimits;
+  /** Replaces the daemon socket request (tests). */
+  open?: OpenPullStream;
+  /** Replaces the socket lookup (tests); null forces the compose path. */
+  socketPath?: string | null;
+  /** Replaces the connectivity check and the wait for the connection (tests). */
+  network?: Pick<RetryOptions, 'isOnline' | 'maxWaitMs' | 'pollMs'>;
+}
+
+/** Retry settings shared by the engine and compose pulls. */
+function pullRetry(emit: Emit, signal: AbortSignal | undefined, retryDelaysMs: number[], options: PullOptions): RetryOptions {
+  return {
+    signal,
+    ...options.network,
+    maxAttempts: retryDelaysMs.length + 1,
+    backoffMs: retryDelaysMs,
+    onEvent: networkReporter(emit, 'Containers', 'downloading the dev container'),
+  };
+}
+
+type Emit = (event: InstallEvent) => void;
+
 /**
- * Pulls the compose images with progress on the Containers bar. Retries network failures, and falls
- * back to plain output on Compose versions without `--progress json`.
+ * Pulls the compose images with progress on the Containers bar.
+ *
+ * 1. Checks registry access first, so a missing or refused login fails in seconds, not after a
+ *    download that never starts.
+ * 2. Pulls through the Docker Engine API, which reports bytes; a watchdog gives up on a pull that
+ *    stops moving (Docker can hang before the first byte) and retries it.
+ * 3. Falls back to `docker compose pull` when the daemon socket can't be reached directly.
  */
 export async function pullImages(
   cli: string,
   composePath: string,
   exec: { env: NodeJS.ProcessEnv; signal?: AbortSignal },
-  emit: (event: InstallEvent) => void,
-  retryDelaysMs: number[] = PULL_RETRY_DELAYS_MS
+  emit: Emit,
+  options: PullOptions = {}
 ): Promise<void> {
-  const output = (line: string) => emit(logEvent(line, 'info', true));
+  const { signal } = exec;
+  const retryDelaysMs = options.retryDelaysMs ?? PULL_RETRY_DELAYS_MS;
+  const warn = (message: string) => emit(logEvent(message, 'warn'));
   const tracker = new PullProgressTracker();
   const throttle = createThrottle<PullStatus>(
     (s) => emit({ type: 'progress', step: 'Containers', label: s.label, percent: s.percent }),
@@ -634,6 +717,146 @@ export async function pullImages(
     if (status) throttle.push(status);
   };
 
+  emit({ type: 'progress', step: 'Containers', label: 'Checking access to the container registry...', percent: 0 });
+  let images: ComposeImage[] = [];
+  try {
+    images = await listComposeImages(cli, composePath, exec.env, signal);
+  } catch (err) {
+    if (signal?.aborted) throw new Error('Cancelled');
+    warn(`Could not read the image list from the container definition: ${(err as Error)?.message ?? String(err)}`);
+  }
+
+  if (images.length > 0) {
+    const access = await checkRegistryAccess(cli, images, exec.env, signal);
+    if (access.kind === 'refused') {
+      const reason = access.output.at(-1)?.trim() || 'access denied';
+      throw new CommandError({
+        message: `The registry refused access to ${access.image}: ${reason}`,
+        command: `${cli} manifest inspect ${access.image}`,
+        outputTail: access.output,
+        details: options.credentials
+          ? []
+          : [`No registry credentials are bundled, and this computer is not signed in to ${registryOf(access.image) ?? 'the registry'}.`],
+      });
+    }
+    if (access.kind === 'unknown') {
+      warn(`Could not check the registry (${access.reason}); trying the download anyway.`);
+    } else if (access.sizes) {
+      let total = 0;
+      for (const size of access.sizes.values()) total += size;
+      emit(logEvent(`The dev container is ${formatBytes(total)} in ${access.sizes.size} layers.`));
+      show(tracker.setExpectedLayers(access.sizes));
+    } else {
+      warn('The registry did not report the image size.');
+    }
+  }
+
+  const socketPath =
+    options.socketPath !== undefined ? options.socketPath : images.length > 0 ? await resolveDockerSocket(cli, exec.env, signal) : null;
+  // The Engine API reports bytes, so no time-based guess is needed there.
+  tracker.estimate = !socketPath;
+  emit({ type: 'progress', step: 'Containers', label: 'Preparing the dev container...', percent: 0 });
+  const started = Date.now();
+  const heartbeat = setInterval(() => show(tracker.tick(Date.now() - started)), 1_000);
+
+  try {
+    let pulled = false;
+    if (socketPath) {
+      try {
+        await pullWithEngine(socketPath, images, exec, emit, tracker, show, retryDelaysMs, options);
+        pulled = true;
+      } catch (err) {
+        if (!(err instanceof EngineUnavailableError)) throw err;
+        warn(`${err.message}. Pulling with docker compose instead (progress is an estimate).`);
+        tracker.estimate = true;
+      }
+    }
+    if (!pulled) await pullWithCompose(cli, composePath, exec, emit, tracker, show, retryDelaysMs, options);
+  } finally {
+    clearInterval(heartbeat);
+    throttle.flush();
+    const events = tracker.summary();
+    if (events) emit(logEvent(`Pull events: ${events}`));
+  }
+  if (tracker.downloadedBytes > 0) emit(logEvent(`Downloaded ${formatBytes(tracker.downloadedBytes)}.`));
+}
+
+async function pullWithEngine(
+  socketPath: string,
+  images: ComposeImage[],
+  exec: { env: NodeJS.ProcessEnv; signal?: AbortSignal },
+  emit: Emit,
+  tracker: PullProgressTracker,
+  show: (status: PullStatus | null) => void,
+  retryDelaysMs: number[],
+  options: PullOptions
+): Promise<void> {
+  const { signal } = exec;
+  const auths = new Map<string, string | undefined>();
+  const authFor = async (image: string): Promise<string | undefined> => {
+    const registry = registryOf(image);
+    if (!registry) return undefined;
+    if (!auths.has(registry)) {
+      const login =
+        registry === REGISTRY && options.credentials
+          ? { username: options.credentials.username, password: options.credentials.token }
+          : await readDockerLogin(registry, { env: exec.env, signal });
+      if (!login) emit(logEvent(`No saved login for ${registry}; pulling without credentials.`, 'warn'));
+      auths.set(registry, login ? encodeRegistryAuth(login, registry) : undefined);
+    }
+    return auths.get(registry);
+  };
+
+  for (const { image, platform } of images) {
+    const auth = await authFor(image);
+    await withNetworkRetry(
+      () =>
+        pullImageViaEngine({
+          socketPath,
+          image,
+          platform,
+          auth,
+          signal,
+          limits: options.watchdog,
+          open: options.open,
+          onQuiet: (limitMs) =>
+            emit(
+              logEvent(
+                `Docker reports no progress while it resolves the image or unpacks layers it already downloaded; waiting up to ${Math.round(limitMs / 60_000)} minutes.`
+              )
+            ),
+          onMessage: (msg) => {
+            const failure = engineError(msg);
+            if (failure) return emit(logEvent(failure, 'error', true));
+            if (msg.id && isLayerId(msg.id)) {
+              const { current, total } = msg.progressDetail ?? {};
+              show(tracker.update({ id: msg.id, parent_id: image, text: msg.status, current, total }));
+            } else if (msg.status) {
+              // "latest: Pulling from ...", "Digest: ...", "Status: Image is up to date ..."
+              emit(logEvent(msg.id ? `${msg.id}: ${msg.status}` : msg.status, 'info', true));
+            }
+          },
+        }),
+      {
+        ...pullRetry(emit, signal, retryDelaysMs, options),
+        // An unreachable socket means "use compose", not "retry". A stall decides for itself (see PullStalledError).
+        isRetryable: (err) => !(err instanceof EngineUnavailableError) && isRetryableError(err),
+      }
+    );
+  }
+}
+
+async function pullWithCompose(
+  cli: string,
+  composePath: string,
+  exec: { env: NodeJS.ProcessEnv; signal?: AbortSignal },
+  emit: Emit,
+  tracker: PullProgressTracker,
+  show: (status: PullStatus | null) => void,
+  retryDelaysMs: number[],
+  options: PullOptions
+): Promise<void> {
+  const output = (line: string) => emit(logEvent(line, 'info', true));
   const onOutput = (line: string) => {
     const event = parseComposeProgress(line);
     if (!event) return output(line);
@@ -645,51 +868,65 @@ export async function pullImages(
     show(tracker.update(event));
   };
 
-  emit({ type: 'progress', step: 'Containers', label: 'Downloading the dev container...', percent: 0 });
-  const started = Date.now();
-  const finished = new AbortController();
-  const sizesSignal = exec.signal ? AbortSignal.any([exec.signal, finished.signal]) : finished.signal;
-  void fetchLayerSizes(cli, composePath, exec.env, sizesSignal).then(
-    (sizes) => {
-      if (finished.signal.aborted) return;
-      if (!sizes) return emit(logEvent('The registry did not report the image size; the download progress is an estimate.', 'warn'));
-      let total = 0;
-      for (const size of sizes.values()) total += size;
-      emit(logEvent(`The dev container is ${formatBytes(total)} in ${sizes.size} layers.`));
-      show(tracker.setExpectedLayers(sizes));
-    },
-    (err) => {
-      if (!finished.signal.aborted) emit(logEvent(`Could not read the image size: ${(err as Error)?.message ?? String(err)}`, 'warn'));
+  let jsonProgress = true;
+  await withNetworkRetry(async () => {
+    if (!jsonProgress) {
+      await execCommand(cli, buildComposeArgs(composePath, 'pull'), { ...exec, onOutput: output });
+      return;
     }
-  );
-  const heartbeat = setInterval(() => show(tracker.tick(Date.now() - started)), 1_000);
+    try {
+      await execCommand(cli, buildComposeArgs(composePath, '--progress', 'json', 'pull'), { ...exec, onOutput });
+    } catch (err) {
+      if (exec.signal?.aborted || !(err instanceof CommandError) || !NO_JSON_PROGRESS.test(err.outputTail.join('\n'))) throw err;
+      emit(logEvent('This Docker Compose cannot report download progress; pulling without it.', 'warn'));
+      jsonProgress = false;
+      await execCommand(cli, buildComposeArgs(composePath, 'pull'), { ...exec, onOutput: output });
+    }
+  }, pullRetry(emit, exec.signal, retryDelaysMs, options));
+}
 
-  try {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await execCommand(cli, buildComposeArgs(composePath, '--progress', 'json', 'pull'), { ...exec, onOutput });
-        break;
-      } catch (err) {
-        if (exec.signal?.aborted || !(err instanceof CommandError)) throw err;
-        const tail = err.outputTail.join('\n');
-        if (NO_JSON_PROGRESS.test(tail)) {
-          emit(logEvent('This Docker Compose cannot report download progress; pulling without it.', 'warn'));
-          await execCommand(cli, buildComposeArgs(composePath, 'pull'), { ...exec, onOutput: output });
-          break;
-        }
-        if (attempt > retryDelaysMs.length || !isTransientPullError(tail)) throw err;
-        emit(logEvent(`Network problem while downloading; retrying (${attempt + 1} of ${retryDelaysMs.length + 1})...`, 'warn'));
-        await delay(retryDelaysMs[attempt - 1], exec.signal);
-      }
+/** Whether every image is already on this computer. */
+export async function imagesPresent(cli: string, env: NodeJS.ProcessEnv, images: ComposeImage[], signal?: AbortSignal): Promise<boolean> {
+  if (images.length === 0) return false;
+  for (const { image } of images) {
+    try {
+      await execCommand(cli, ['image', 'inspect', '--format', '{{.Id}}', image], { env, signal });
+    } catch {
+      if (signal?.aborted) throw new Error('Cancelled');
+      return false;
     }
-  } finally {
-    finished.abort();
-    clearInterval(heartbeat);
-    throttle.flush();
-    const events = tracker.summary();
-    if (events) emit(logEvent(`Pull events: ${events}`));
   }
-  if (tracker.downloadedBytes > 0) emit(logEvent(`Downloaded ${formatBytes(tracker.downloadedBytes)}.`));
+  return true;
+}
+
+/**
+ * Downloads the dev container, unless there is no internet and it is already on this computer:
+ * then the one we have is used, so a re-run works offline. A download that fails for lack of
+ * network (after waiting for it) also falls back to the local copy. Otherwise errors pass through.
+ */
+export async function pullOrUseLocal(steps: {
+  pull: () => Promise<void>;
+  isOnline: () => Promise<boolean>;
+  haveLocal: () => Promise<boolean>;
+  warn: (message: string) => void;
+  signal?: AbortSignal;
+}): Promise<'pulled' | 'local'> {
+  const useLocal = (why: string): 'local' => {
+    steps.warn(`${why} Using the dev container already on this computer (it may not be the newest).`);
+    return 'local';
+  };
+  if (!(await steps.isOnline()) && (await steps.haveLocal())) return useLocal('No internet connection.');
+  try {
+    await steps.pull();
+    return 'pulled';
+  } catch (err) {
+    if (steps.signal?.aborted) throw err;
+    const networkTrouble = err instanceof OfflineError || err instanceof PullStalledError || isRetryableError(err);
+    if (networkTrouble && (await steps.haveLocal())) {
+      return useLocal(`Could not download the newest dev container (${errorText(err).split('\n')[0]}).`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -739,21 +976,27 @@ export async function startContainers(options: {
 
   const onOutput = (line: string) => log('info', line, true);
   const creds = loadRegistryCredentials(options.credentialFiles);
-  if (creds) {
-    progress('Signing in to the container registry...');
-    log('info', `Signing in to ${REGISTRY} as ${creds.username}...`);
-    // The token goes over stdin, never on the command line (which ends up in logs and reports).
-    await execCommand(cli, ['login', REGISTRY, '--username', creds.username, '--password-stdin'], {
-      env,
-      signal,
-      onOutput,
-      input: `${creds.token}\n`,
-    });
-  } else {
-    log('warn', `No registry credentials are bundled; using this computer's existing Docker login for ${REGISTRY}.`);
-  }
-
-  await pullImages(cli, composePath, { env, signal }, emit);
+  const images = await listComposeImages(cli, composePath, env, signal).catch((): ComposeImage[] => []);
+  await pullOrUseLocal({
+    signal,
+    warn: (message) => log('warn', message),
+    isOnline: async () => (await checkConnectivity({ signal })).online,
+    haveLocal: () => imagesPresent(cli, env, images, signal),
+    pull: async () => {
+      if (creds) {
+        progress('Signing in to the container registry...');
+        log('info', `Signing in to ${REGISTRY} as ${creds.username}...`);
+        // The token goes over stdin, never on the command line (which ends up in logs and reports).
+        await withNetworkRetry(
+          () => execCommand(cli, ['login', REGISTRY, '--username', creds.username, '--password-stdin'], { env, signal, onOutput, input: `${creds.token}\n` }),
+          { signal, onEvent: networkReporter(emit, 'Containers', 'signing in to the container registry') }
+        );
+      } else {
+        log('warn', `No registry credentials are bundled; using this computer's existing Docker login for ${REGISTRY}.`);
+      }
+      await pullImages(cli, composePath, { env, signal }, emit, { credentials: creds });
+    },
+  });
 
   progress('Starting the dev container...');
   await execCommand(cli, buildComposeArgs(composePath, 'up', '-d'), { env, signal, onOutput });
