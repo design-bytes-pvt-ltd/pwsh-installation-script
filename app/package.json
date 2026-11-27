@@ -11,6 +11,10 @@
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:linux": "npm run build && electron-builder --linux --x64",
+    "dist:all": "npm run build && electron-builder --mac --win --linux --x64",
     "ui:add": "env -u npm_config_allow_scripts TS_NODE_PROJECT=tsconfig.renderer.json shadcn add"
   },
   "devDependencies": {
